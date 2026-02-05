@@ -722,13 +722,15 @@ function handleSpreadsheetEdit(e) {
   const row = range.getRow();
   if (row < 2) return;
 
+  // 所属局列（10, 13, 16, 19, 22）の編集を検出
   const startCol = 10;
   if (col < startCol || col > 22) return;
   if ((col - startCol) % 3 !== 0) return;
 
   const orgName = e.value;
-  const deptRange = sheet.getRange(row, col + 1);
+  const deptRange = sheet.getRange(row, col + 1); // 所属部門の隣のセル
 
+  // 所属局が空の場合、所属部門もクリア
   if (!orgName) {
     deptRange.clearContent();
     deptRange.clearDataValidation();
@@ -740,9 +742,11 @@ function handleSpreadsheetEdit(e) {
   const lastRow = optSheet.getLastRow();
   if (lastRow < 2) return;
 
+  // Optionsシートの部門マスタ（E列:局, F列:部門）から該当する部門を抽出
   const masterData = optSheet.getRange(2, 5, lastRow - 1, 2).getValues();
   const filteredDepts = masterData.filter(r => r[0] === orgName).map(r => r[1]).filter(String);
 
+  // 該当する部門のみのドロップダウンリストを設定
   if (filteredDepts.length > 0) {
     const rule = SpreadsheetApp.newDataValidation().requireValueInList(filteredDepts).setAllowInvalid(true).build();
     deptRange.setDataValidation(rule);
