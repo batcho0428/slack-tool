@@ -624,9 +624,12 @@ function sendDMs(sessionToken, message, recipients) {
       const uid = getSlackID(token, r.email);
       if (!uid) throw new Error("Slackアカウントなし");
       const text = message.replace(/{mention}/g, `<@${uid}>`);
+      // 共有可能な Slack へのリンクを添付
+      const shareUrl = `https://slack.com/app_redirect?channel=${uid}`;
+      const fullText = `${text}\n\nまたは、以下のリンクを開いてください。\n${shareUrl}`;
       const res = UrlFetchApp.fetch("https://slack.com/api/chat.postMessage", {
         method: "post", contentType: "application/json", headers: { "Authorization": "Bearer " + token },
-        payload: JSON.stringify({ channel: uid, text: text }), muteHttpExceptions: true
+        payload: JSON.stringify({ channel: uid, text: fullText }), muteHttpExceptions: true
       });
       const json = JSON.parse(res.getContentText());
       if (!json.ok) throw new Error(json.error || "Unknown Error");
