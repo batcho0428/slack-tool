@@ -288,18 +288,26 @@ function requestLoginOtp(email) {
     const otpPayload = JSON.stringify({ code: otp, created: new Date().getTime() });
     PropertiesService.getScriptProperties().setProperty(`OTP_${targetEmail}`, otpPayload);
 
-    // DM送信
+    // DM送信（plain text と blocks 両方でリンクを表示する）
+    const plainText = `【${APP_NAME}】認証コード: *${otp}*\nこのコードを画面に入力してください。(有効期限10分)`;
+    const shareUrl = getScriptProperty('SHAREABLE_URL');;
+    const blocks = [
+      { type: 'section', text: { type: 'mrkdwn', text: plainText } },
+      { type: 'section', text: { type: 'mrkdwn', text: `または、以下のリンクを開いてください。\n<${shareUrl}>` } }
+    ];
+
     const msgRes = UrlFetchApp.fetch("https://slack.com/api/chat.postMessage", {
       method: "post",
       contentType: "application/json",
       headers: { "Authorization": "Bearer " + botToken },
-      payload: JSON.stringify({
-        channel: slackUserId,
-        text: `【${APP_NAME}】認証コード: *${otp}*\nこのコードを画面に入力してください。(有効期限10分)`
-      }),
+      payload: JSON.stringify({ channel: slackUserId, text: plainText, blocks: blocks }),
       muteHttpExceptions: true
     });
-    if (!JSON.parse(msgRes.getContentText()).ok) throw new Error("Slack DM送信失敗");
+    const msgJson = JSON.parse(msgRes.getContentText());
+    if (!msgJson.ok) {
+      console.warn('chat.postMessage failed:', msgJson.error, msgJson);
+      throw new Error("Slack DM送信失敗: " + (msgJson.error || 'unknown'));
+    }
 
     return { success: true };
   } catch (e) {
@@ -627,9 +635,17 @@ function sendDMs(sessionToken, message, recipients) {
       // 共有可能な Slack へのリンクを添付
       const shareUrl = `https://slack.com/app_redirect?channel=${uid}`;
       const fullText = `${text}\n\nまたは、以下のリンクを開いてください。\n${shareUrl}`;
+      // blocks を使って確実にリンクが表示されるようにする
+      const blocks = [
+        { type: 'section', text: { type: 'mrkdwn', text: text } },
+        { type: 'section', text: { type: 'mrkdwn', text: `または、以下のリンクを開いてください。\n<${shareUrl}>` } }
+      ];
       const res = UrlFetchApp.fetch("https://slack.com/api/chat.postMessage", {
-        method: "post", contentType: "application/json", headers: { "Authorization": "Bearer " + token },
-        payload: JSON.stringify({ channel: uid, text: fullText }), muteHttpExceptions: true
+        method: "post",
+        contentType: "application/json",
+        headers: { "Authorization": "Bearer " + token },
+        payload: JSON.stringify({ channel: uid, text: fullText, blocks: blocks }),
+        muteHttpExceptions: true
       });
       const json = JSON.parse(res.getContentText());
       if (!json.ok) throw new Error(json.error || "Unknown Error");
