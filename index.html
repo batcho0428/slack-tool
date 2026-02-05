@@ -171,7 +171,7 @@
                                 </div>
                             )}
                             {view === 'guest' && <GuestScreen authUrl={authUrl} onLoginSuccess={checkLogin} />}
-                            {view === 'main' && user && <MainScreen user={user} />}
+                            {view === 'main' && user && <MainScreen user={user} authUrl={authUrl} />}
                         </div>
                     </div>
                     <DialogModal isOpen={logoutDialog} type="confirm" message="ログアウトしますか？" onOk={executeLogout} onCancel={()=>setLogoutDialog(false)} />
@@ -255,7 +255,7 @@
 
                     <div className="w-full max-w-md text-center">
                         <p className="text-xs text-gray-500 mb-2">- または -</p>
-                        <button onClick={() => window.top.location.href = authUrl} className="w-full bg-[#4A154B] text-white font-bold py-3 rounded-lg shadow hover:bg-[#381039] transition flex items-center justify-center text-sm">
+                        <button onClick={() => { if (typeof authUrl !== 'undefined' && authUrl) window.top.location.href = authUrl; }} className="w-full bg-[#4A154B] text-white font-bold py-3 rounded-lg shadow hover:bg-[#381039] transition flex items-center justify-center text-sm">
                             <i className="fab fa-slack text-lg mr-2"></i> Slackアカウントでログイン (PC推奨)
                         </button>
                     </div>
@@ -263,7 +263,7 @@
             );
         }
 
-        function MainScreen({ user }) {
+        function MainScreen({ user, authUrl }) {
             const [tab, setTab] = useState('dm');
             return (
                 <div className="flex flex-col h-full">

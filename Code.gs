@@ -231,7 +231,9 @@ function getLoginUser(sessionToken) {
 
     if (!userRow) return { status: 'error', message: "ユーザー情報が見つかりません" };
 
-    const hasToken = (slackToken && slackToken.toString().startsWith('xoxp-'));
+    // Slackのトークン接頭辞は環境や種別により 'xoxp-', 'xoxb-', 'xoxa-', 'xoxc-' 等があるため
+    // 'xox' で始まるものは連携済みとみなす
+    const hasToken = !!slackToken && slackToken.toString().startsWith('xox');
     return {
       status: 'authorized',
       hasToken: hasToken,
@@ -265,7 +267,17 @@ function requestLoginOtp(email) {
       muteHttpExceptions: true
     });
     const lookupJson = JSON.parse(lookupRes.getContentText());
-    if (!lookupJson.ok) return { success: false, message: "Slackアカウントが見つかりません。(Botがワークスペースにいない可能性があります)" };
+    if (!lookupJson.ok) {
+      // よくあるエラーを人間向けに説明
+      let userMessage = "Slackアカウントが見つかりません。(Botがワークスペースにいない可能性があります)";
+      const err = lookupJson.error || '';
+      if (err === 'users_not_found' || err === 'user_not_found') userMessage = '指定したメールアドレスのSlackユーザーが見つかりません。メールアドレスをご確認ください。';
+      else if (err === 'not_authed' || err === 'invalid_auth' || err === 'account_inactive') userMessage = 'Botトークンが無効です。Script Properties の SLACK_BOT_TOKEN を確認してください。';
+      else if (err === 'missing_scope') userMessage = 'Botに必要な権限がありません。users:read.email 権限を付与してください。';
+      else if (err === 'rate_limited') userMessage = 'Slack API の利用制限に達しました。しばらくしてから再試行してください。';
+      console.warn('users.lookupByEmail failed:', err, lookupJson);
+      return { success: false, message: userMessage, needBotSetup: true };
+    }
 
     const slackUserId = lookupJson.user.id;
 
