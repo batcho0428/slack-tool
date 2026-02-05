@@ -642,7 +642,14 @@ function updateUserProfile(sessionToken, formData, targetEmail) {
   sheet.getRange(rowIndex, COL.STUDENT_ID + 1).setValue(formData.studentId || '');
   sheet.getRange(rowIndex, COL.GRADE + 1).setValue(formData.grade || '');
   sheet.getRange(rowIndex, COL.FIELD + 1).setValue(formData.field || '');
-  sheet.getRange(rowIndex, COL.PHONE + 1).setValue(formData.phone || '');
+  // 電話番号は先頭0を保持するため、セルを文字列書式にしてから明示的に文字列で保存する
+  try {
+    const phoneRange = sheet.getRange(rowIndex, COL.PHONE + 1);
+    phoneRange.setNumberFormat('@');
+    phoneRange.setValue(String(formData.phone || ''));
+  } catch (e) {
+    sheet.getRange(rowIndex, COL.PHONE + 1).setValue(String(formData.phone || ''));
+  }
 
   // 生年月日: フロント側は yyyy-MM-dd を渡す想定。空でなければ Date として保存。
   if (formData.birthday) {
@@ -683,6 +690,83 @@ function updateUserProfile(sessionToken, formData, targetEmail) {
 /* --------------------------------------------------------------------------
  * 5. DM送信 & チャンネル招待
  * -------------------------------------------------------------------------- */
+/**
+ * 管理者向け: 新規ユーザー作成
+ * @param {string} sessionToken
+ * @param {object} userObj
+ */
+function createUser(sessionToken, userObj) {
+  const login = getLoginUser(sessionToken);
+  if (login.status !== 'authorized') throw new Error('認証されていません');
+
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const usersSheet = ss.getSheetByName(SHEET_USERS);
+  if (!usersSheet) throw new Error('Users シートが見つかりません');
+
+  // 管理者判定
+  const allUsers = usersSheet.getDataRange().getValues();
+  const loginRow = allUsers.find(r => r[COL.EMAIL] === login.user.email);
+  const isAdmin = loginRow && (loginRow[COL.ADMIN] === 'TRUE' || loginRow[COL.ADMIN] === true);
+  if (!isAdmin) throw new Error('権限がありません');
+
+  // 必須チェック
+  const name = (userObj.name || '').toString().trim();
+  const email = (userObj.email || '').toString().trim().toLowerCase();
+  if (!name) throw new Error('氏名を入力してください');
+  if (!email) throw new Error('メールアドレスを入力してください');
+
+  // 重複チェック
+  for (let i = 1; i < allUsers.length; i++) {
+    if (String(allUsers[i][COL.EMAIL]).trim().toLowerCase() === email) {
+      throw new Error('同じメールアドレスのユーザーが既に存在します');
+    }
+  }
+
+  // 行データ作成
+  const row = new Array(HEADER_USERS.length).fill('');
+  row[COL.NAME_JP] = name;
+  row[COL.NAME_EN] = userObj.nameEn || '';
+  row[COL.STUDENT_ID] = userObj.studentId || '';
+  row[COL.GRADE] = userObj.grade || '';
+  row[COL.FIELD] = userObj.field || '';
+  row[COL.EMAIL] = email;
+  row[COL.PHONE] = userObj.phone || '';
+  if (userObj.birthday) {
+    const d = new Date(userObj.birthday);
+    if (!isNaN(d.getTime())) row[COL.BIRTHDAY] = d;
+  }
+  row[COL.ALMA_MATER] = userObj.almaMater || '';
+
+  // 所属 (5セット)
+  if (userObj.orgs && Array.isArray(userObj.orgs)) {
+    for (let k = 0; k < 5; k++) {
+      const base = COL.ORG_START + (k * 3);
+      if (k < userObj.orgs.length) {
+        const o = userObj.orgs[k] || {};
+        row[base] = o.org || '';
+        row[base + 1] = o.dept || '';
+        row[base + 2] = o.role || '';
+      }
+    }
+  }
+
+  // チェックボックス列
+  row[COL.CAR_OWNER] = userObj.carOwner ? true : false;
+  row[COL.ADMIN] = userObj.isAdmin ? true : false;
+
+  usersSheet.appendRow(row);
+  // appendRow の後に、電話番号セルを文字列書式で上書きして先頭0を確実に保持する
+  try {
+    const lastRow = usersSheet.getLastRow();
+    const phoneRangeNew = usersSheet.getRange(lastRow, COL.PHONE + 1);
+    phoneRangeNew.setNumberFormat('@');
+    phoneRangeNew.setValue(String(userObj.phone || ''));
+  } catch (e) {
+    // フォールバック: 何もしない
+  }
+  return { success: true };
+}
+
 function sendDMs(sessionToken, message, recipients) {
   const { token, email: senderEmail } = getUserToken(sessionToken);
   const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
