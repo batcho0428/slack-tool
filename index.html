@@ -518,6 +518,7 @@
                 );
             }
 
+
             const insertMention = () => {
                 const t = txtRef.current;
                 if(t){
@@ -595,7 +596,8 @@
             const [channels, setChannels] = useState([]);
             const [selectedChannel, setSelectedChannel] = useState('');
             const [recipients, setRecipients] = useState([]);
-            const [loadingChannels, setLoadingChannels] = useState(false);
+            const [loadingChannels, setLoadingChannels] = useState(true);
+            const [needsAuth, setNeedsAuth] = useState(false);
             const [modalOpen, setModalOpen] = useState(false);
             const [sending, setSending] = useState(false);
             const [progress, setProgress] = useState(0);
@@ -610,14 +612,32 @@
             const closeDialog = () => setDialog(prev => ({ ...prev, isOpen: false }));
 
             useEffect(() => {
-                if (user && !user.hasToken) return; // トークン無しなら取得しない
+                let mounted = true;
                 setLoadingChannels(true);
-                runGas('getChannels', localStorage.getItem('slack_app_session'))
-                    .then(setChannels)
-                    .catch(e => setDialog({ isOpen: true, type: 'alert', message: "チャンネル取得エラー: " + e.message, onOk: closeDialog }))
-                    .finally(() => {
+                setNeedsAuth(false);
+
+                // user が未セット (初期 null) の間は読み込みスピナーを継続する
+                if (user == null) {
+                    return () => { mounted = false; };
+                }
+
+                // Slack連携がない場合は読み込み表示ののち認証案内へ
+                if (!user.hasToken) {
+                    if (mounted) {
+                        setNeedsAuth(true);
+                        setChannels([]);
                         setLoadingChannels(false);
-                    });
+                    }
+                    return () => { mounted = false; };
+                }
+
+                // 連携済: チャンネル取得
+                runGas('getChannels', localStorage.getItem('slack_app_session'))
+                    .then(list => { if (mounted) setChannels(list || []); })
+                    .catch(e => { if (mounted) setDialog({ isOpen: true, type: 'alert', message: "チャンネル取得エラー: " + e.message, onOk: closeDialog }); })
+                    .finally(() => { if (mounted) setLoadingChannels(false); });
+
+                return () => { mounted = false; };
             }, [user]);
 
             const handleInviteClick = () => {
@@ -643,7 +663,13 @@
                 finally { setSending(false); }
             };
 
-            if (user && !user.hasToken) {
+            // 初期は読み込み中を表示
+            if (loadingChannels) {
+                return <div className="flex justify-center items-center h-full text-gray-500"><i className="fas fa-spinner fa-spin mr-2"></i>読み込み中...</div>;
+            }
+
+            // 認証が必要な場合は案内を表示
+            if (needsAuth) {
                 return (
                     <div className="flex flex-col items-center justify-center h-full p-6 text-center">
                         <div className="max-w-md w-full bg-white rounded-lg shadow p-6">
@@ -666,6 +692,7 @@
                             {channels.map(c => <option key={c.id} value={c.id}>{c.is_private ? '🔒 ' : '# '}{c.name}</option>)}
                         </select>
                         <p className="text-xs text-gray-500">※ あなたが参加しているチャンネルのみ表示されます。</p>
+
                     </div>
                     <div className="flex-1 min-h-0">
                         <RecipientSelector labelText="招待するユーザー" recipients={recipients} setRecipients={setRecipients} onAddClick={()=>setModalOpen(true)} />
