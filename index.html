@@ -1,0 +1,773 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>{{APP_NAME}}</title>
+
+    <script>
+        window.onerror = function(message, source, lineno, colno, error) {
+            console.error(error);
+            var root = document.getElementById('root');
+            if(root) root.innerHTML = '<div style="color:red; padding:20px; text-align:center;"><h3>システムエラー</h3><p>' + message + '</p><p>Line: ' + lineno + '</p></div>';
+        };
+    </script>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+
+    <style>
+        body { font-family: 'Helvetica Neue', Arial, 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', Meiryo, sans-serif; background-color: #f3f4f6; color: #1d1c1d; }
+        .modal-overlay { background-color: rgba(0, 0, 0, 0.5); backdrop-filter: blur(2px); }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar-thumb { background: #ccc; border-radius: 4px; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .animate-fade-in { animation: fadeIn 0.3s ease-in-out; }
+        button, input, select, textarea { touch-action: manipulation; }
+    </style>
+</head>
+<body>
+    <div id="root">
+        <div style="height: 100dvh; display: flex; justify-content: center; align-items: center; color: #666;">
+            <div><i class="fas fa-circle-notch fa-spin text-4xl mb-4"></i><p>システム読み込み中...</p></div>
+        </div>
+    </div>
+
+    <script>
+        window.APP_NAME = "{{APP_NAME}}";
+        window.APP_HEADER_COLOR = "{{APP_HEADER_COLOR}}";
+        if (window.APP_NAME.indexOf("{{") !== -1) window.APP_NAME = "Slack送信ツール";
+        if (window.APP_HEADER_COLOR.indexOf("{{") !== -1) window.APP_HEADER_COLOR = "#1a237e";
+    </script>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        const runGas = (funcName, ...args) => {
+            return new Promise((resolve, reject) => {
+                if (typeof google !== 'undefined' && google.script) {
+                    google.script.run
+                        .withSuccessHandler(resolve)
+                        .withFailureHandler(reject)
+                        [funcName](...args);
+                } else {
+                    console.log(`[Mock] Calling ${funcName}`, args);
+                    setTimeout(() => {
+                        // モックデータ定義
+                        if (funcName === 'getLoginUser') resolve({ status: 'authorized', user: { name: "MockUser", email: "mock@example.com" } });
+                        else if (funcName === 'getChannels') resolve([{id:'C1', name:'general'}, {id:'C2', name:'random', is_private:true}]);
+                        else if (funcName === 'getSearchOptions') resolve({
+                            grades: ["B1", "B2", "B3", "B4", "M1", "M2"],
+                            fields: ["Info", "Mech", "Elec"],
+                            roles: ["部長", "メンバー"],
+                            orgs: ["局A", "局B"],
+                            deptMaster: [{org: "局A", dept: "開発部"}, {org: "局A", dept: "広報部"}, {org: "局B", dept: "営業部"}]
+                        });
+                        else if (funcName === 'searchRecipients') resolve(Array(5).fill(0).map((_,i)=>({name:`User ${i}`, email:`u${i}@ex.com`, department:"局A 開発部", grade:"B4", field:"Info"})));
+                        else if (funcName === 'requestLoginOtp') resolve({ success: true });
+                        else if (funcName === 'verifyLoginOtp') resolve({ success: true, token: 'mock-session-token' });
+                        else if (funcName === 'getUserProfile') resolve({
+                            name: "MockUser", email: "mock@example.com", studentId: "12345678", grade: "B3", field: "Info", phone: "09000000000", birthday: "2000/01/01", almaMater: "HighSchool",
+                            orgs: [{org:"局A", dept:"開発部", role:"Member"}, {}, {}, {}, {}]
+                        });
+                        else if (funcName === 'updateUserProfile') resolve({ success: true });
+                        else resolve({ success: args[args.length-1].length, failed: [] });
+                    }, 800);
+                }
+            });
+        };
+
+        const processInBatches = async (items, batchSize, processFunction, onProgress) => {
+            let successTotal = 0;
+            let failedListTotal = [];
+            for (let i = 0; i < items.length; i += batchSize) {
+                const batch = items.slice(i, i + batchSize);
+                try {
+                    const res = await processFunction(batch);
+                    successTotal += res.success;
+                    failedListTotal = [...failedListTotal, ...res.failed];
+                } catch (e) {
+                    const batchFailures = batch.map(b => ({ email: b.email, error: e.message || "Batch Error" }));
+                    failedListTotal = [...failedListTotal, ...batchFailures];
+                }
+                if (onProgress) onProgress(Math.min(100, Math.round(((i + batch.length) / items.length) * 100)));
+            }
+            return { success: successTotal, failed: failedListTotal };
+        };
+
+        function DialogModal({ isOpen, type, message, onOk, onCancel }) {
+            if (!isOpen) return null;
+            return (
+                <div className="fixed inset-0 flex items-center justify-center modal-overlay p-4 z-[200]">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6 flex flex-col animate-fade-in">
+                        <h3 className="text-lg font-bold mb-4 text-gray-800">{type === 'confirm' ? '確認' : '通知'}</h3>
+                        <p className="text-gray-600 mb-6 whitespace-pre-wrap text-sm">{message}</p>
+                        <div className="flex space-x-3 justify-end">
+                            {type === 'confirm' && (
+                                <button onClick={onCancel} className="px-4 py-2 rounded-lg text-gray-600 bg-gray-100 hover:bg-gray-200 font-medium text-sm transition-colors">キャンセル</button>
+                            )}
+                            <button onClick={onOk} className="px-4 py-2 rounded-lg text-white bg-blue-600 hover:bg-blue-700 font-bold text-sm shadow-md transition-transform active:scale-95">OK</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function App() {
+            const [view, setView] = useState('loading');
+            const [user, setUser] = useState(null);
+            const [authUrl, setAuthUrl] = useState('');
+            const [errorMsg, setErrorMsg] = useState('');
+            const [scriptUrl, setScriptUrl] = useState('');
+            const [logoutDialog, setLogoutDialog] = useState(false);
+
+            useEffect(() => {
+                runGas('getScriptUrl').then(setScriptUrl);
+                const token = localStorage.getItem('slack_app_session');
+                checkLogin(token);
+            }, []);
+
+            const checkLogin = (token) => {
+                runGas('getLoginUser', token).then(res => {
+                    if (res.status === 'authorized') { setUser(res.user); setView('main'); }
+                    else if (res.status === 'guest') { runGas('getAuthUrl').then(url => { setAuthUrl(url); setView('guest'); }); }
+                    else { throw new Error(res.message); }
+                }).catch(e => { setErrorMsg(e.message); setView('error'); });
+            };
+
+            const executeLogout = () => {
+                setLogoutDialog(false);
+                localStorage.removeItem('slack_app_session');
+                if (scriptUrl) window.top.location.href = scriptUrl;
+                else window.location.reload();
+            };
+
+            return (
+                <div className="min-h-screen flex flex-col items-center pt-2 px-2 pb-2 md:pt-6 md:px-4 md:pb-10 bg-[#f3f4f6]">
+                    <div className="w-full max-w-4xl bg-white rounded-lg md:rounded-xl shadow-xl overflow-hidden flex flex-col h-[calc(100dvh-1rem)] md:h-auto md:min-h-[700px]">
+                        <div style={{ backgroundColor: window.APP_HEADER_COLOR }} className="p-3 md:p-4 text-white flex justify-between items-center shadow-md z-10 shrink-0">
+                            <h1 className="font-bold text-base md:text-lg tracking-wide flex items-center">
+                                <i className="fab fa-slack mr-2 text-xl"></i> {window.APP_NAME}
+                            </h1>
+                            {user && (
+                                <div className="flex items-center text-sm bg-white/10 px-2 py-1 md:px-3 rounded-full">
+                                    <span className="mr-1 md:mr-2 truncate max-w-[100px] md:max-w-[150px] text-xs md:text-sm">{user.name}</span>
+                                    <button onClick={()=>setLogoutDialog(true)} className="hover:text-red-200 ml-1 md:ml-2 p-1" title="ログアウト">
+                                        <i className="fas fa-sign-out-alt"></i>
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="flex-1 relative bg-white flex flex-col overflow-hidden">
+                            {view === 'loading' && <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-500"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-gray-900 mb-4"></div><p>読み込み中...</p></div>}
+                            {view === 'error' && (
+                                <div className="p-4 md:p-8 flex flex-col items-center justify-center h-full">
+                                    <div className="bg-red-50 text-red-700 p-6 rounded-lg text-center max-w-md w-full border border-red-200">
+                                        <h3 className="font-bold text-lg mb-2">エラー</h3>
+                                        <p className="text-sm mb-4">{errorMsg}</p>
+                                        <button onClick={()=>window.location.reload()} className="bg-red-600 text-white px-6 py-2 rounded hover:bg-red-700">再読み込み</button>
+                                    </div>
+                                </div>
+                            )}
+                            {view === 'guest' && <GuestScreen authUrl={authUrl} onLoginSuccess={checkLogin} />}
+                            {view === 'main' && user && <MainScreen user={user} />}
+                        </div>
+                    </div>
+                    <DialogModal isOpen={logoutDialog} type="confirm" message="ログアウトしますか？" onOk={executeLogout} onCancel={()=>setLogoutDialog(false)} />
+                </div>
+            );
+        }
+
+        // ゲスト画面 (Bot OTP認証対応)
+        function GuestScreen({ authUrl, onLoginSuccess }) {
+            const [step, setStep] = useState(1); // 1:Email, 2:Code
+            const [email, setEmail] = useState('');
+            const [code, setCode] = useState('');
+            const [loading, setLoading] = useState(false);
+            const [error, setError] = useState('');
+
+            const handleRequestOtp = async (e) => {
+                e.preventDefault();
+                setLoading(true); setError('');
+                try {
+                    const res = await runGas('requestLoginOtp', email);
+                    if (res.success) setStep(2);
+                    else setError(res.message);
+                } catch(e) { setError(e.message); }
+                finally { setLoading(false); }
+            };
+
+            const handleVerifyOtp = async (e) => {
+                e.preventDefault();
+                setLoading(true); setError('');
+                try {
+                    const res = await runGas('verifyLoginOtp', email, code);
+                    if (res.success) {
+                        localStorage.setItem('slack_app_session', res.token);
+                        onLoginSuccess(res.token);
+                    } else setError(res.message);
+                } catch(e) { setError(e.message); }
+                finally { setLoading(false); }
+            };
+
+            return (
+                <div className="flex flex-col items-center justify-start h-full p-4 md:p-6 overflow-y-auto">
+                    <h2 className="text-xl md:text-2xl font-bold text-gray-800 mb-4 md:mb-6 mt-2">ログイン</h2>
+
+                    <div className="w-full max-w-md bg-white border border-gray-200 rounded-lg p-6 shadow-sm mb-6">
+                        <div className="flex items-center mb-4 text-gray-700 font-bold border-b pb-2">
+                            <i className="fas fa-lock mr-2 text-blue-600"></i>
+                            認証コードでログイン
+                        </div>
+
+                        {step === 1 ? (
+                            <form onSubmit={handleRequestOtp} className="space-y-4">
+                                <p className="text-sm text-gray-600">
+                                    登録済みのメールアドレスを入力してください。<br/>Slack Botから認証コードが送信されます。
+                                </p>
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-500 mb-1">メールアドレス</label>
+                                    <input required type="email" className="w-full border p-3 rounded text-sm focus:ring-2 focus:ring-blue-400 outline-none" value={email} onChange={e=>setEmail(e.target.value)} placeholder="example@ex.com" />
+                                </div>
+                                <button type="submit" disabled={loading} className={`w-full py-3 rounded-lg font-bold text-sm text-white shadow transition ${loading ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'}`}>
+                                    {loading ? <i className="fas fa-spinner fa-spin"></i> : '認証コードを送信'}
+                                </button>
+                            </form>
+                        ) : (
+                            <form onSubmit={handleVerifyOtp} className="space-y-4">
+                                <p className="text-sm text-gray-600">
+                                    Slack Botから送信された6桁のコードを入力してください。
+                                </p>
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-500 mb-1">認証コード</label>
+                                    <input required type="text" className="w-full border p-3 rounded text-lg tracking-widest text-center focus:ring-2 focus:ring-blue-400 outline-none" value={code} onChange={e=>setCode(e.target.value)} placeholder="123456" maxLength={6} />
+                                </div>
+                                {error && <div className="text-red-600 text-xs bg-red-50 p-2 rounded">{error}</div>}
+                                <button type="submit" disabled={loading} className={`w-full py-3 rounded-lg font-bold text-sm text-white shadow transition ${loading ? 'bg-gray-400' : 'bg-green-600 hover:bg-green-700'}`}>
+                                    {loading ? <i className="fas fa-spinner fa-spin"></i> : 'ログイン'}
+                                </button>
+                                <button type="button" onClick={()=>setStep(1)} className="w-full text-xs text-gray-500 hover:underline">メールアドレス入力に戻る</button>
+                            </form>
+                        )}
+                        {step === 1 && error && <div className="mt-3 text-red-600 text-xs bg-red-50 p-2 rounded">{error}</div>}
+                    </div>
+
+                    <div className="w-full max-w-md text-center">
+                        <p className="text-xs text-gray-500 mb-2">- または -</p>
+                        <button onClick={() => window.top.location.href = authUrl} className="w-full bg-[#4A154B] text-white font-bold py-3 rounded-lg shadow hover:bg-[#381039] transition flex items-center justify-center text-sm">
+                            <i className="fab fa-slack text-lg mr-2"></i> Slackアカウントでログイン (PC推奨)
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+
+        function MainScreen({ user }) {
+            const [tab, setTab] = useState('dm');
+            return (
+                <div className="flex flex-col h-full">
+                    <div className="flex border-b border-gray-200 shrink-0 bg-gray-50">
+                        <button onClick={() => setTab('dm')} className={`flex-1 py-3 text-center font-bold text-sm border-b-2 transition ${tab === 'dm' ? 'border-blue-600 text-blue-600 bg-white' : 'border-transparent text-gray-500 hover:bg-gray-100'}`}>
+                            <i className="far fa-paper-plane mr-2"></i> 一斉送信
+                        </button>
+                        <button onClick={() => setTab('channel')} className={`flex-1 py-3 text-center font-bold text-sm border-b-2 transition ${tab === 'channel' ? 'border-green-600 text-green-600 bg-white' : 'border-transparent text-gray-500 hover:bg-gray-100'}`}>
+                            <i className="fas fa-user-plus mr-2"></i> 招待
+                        </button>
+                        <button onClick={() => setTab('mypage')} className={`flex-1 py-3 text-center font-bold text-sm border-b-2 transition ${tab === 'mypage' ? 'border-purple-600 text-purple-600 bg-white' : 'border-transparent text-gray-500 hover:bg-gray-100'}`}>
+                            <i className="fas fa-id-card mr-2"></i> マイページ
+                        </button>
+                    </div>
+                    <div className="flex-1 overflow-hidden relative">
+                        {tab === 'dm' && <DmTab currentUserEmail={user.email} />}
+                        {tab === 'channel' && <ChannelTab currentUserEmail={user.email} />}
+                        {tab === 'mypage' && <MyPage />}
+                    </div>
+                </div>
+            );
+        }
+
+        function MyPage() {
+            const [profile, setProfile] = useState(null);
+            const [options, setOptions] = useState(null);
+            const [loading, setLoading] = useState(true);
+            const [saving, setSaving] = useState(false);
+            const [msg, setMsg] = useState({ type: '', text: '' });
+
+            useEffect(() => {
+                Promise.all([
+                    runGas('getUserProfile', localStorage.getItem('slack_app_session')),
+                    runGas('getSearchOptions')
+                ]).then(([p, o]) => {
+                    setProfile(p);
+                    setOptions(o);
+                }).catch(e => setMsg({ type: 'error', text: e.message }))
+                .finally(() => setLoading(false));
+            }, []);
+
+            const handleChange = (key, val) => setProfile(prev => ({ ...prev, [key]: val }));
+
+            const handleOrgChange = (idx, key, val) => {
+                const newOrgs = [...profile.orgs];
+                newOrgs[idx] = { ...newOrgs[idx], [key]: val };
+                setProfile(prev => ({ ...prev, orgs: newOrgs }));
+            };
+
+            const handleSave = async () => {
+                setSaving(true); setMsg({ type: '', text: '' });
+                try {
+                    await runGas('updateUserProfile', localStorage.getItem('slack_app_session'), profile);
+                    setMsg({ type: 'success', text: '保存しました' });
+                } catch(e) {
+                    setMsg({ type: 'error', text: '保存失敗: ' + e.message });
+                } finally { setSaving(false); }
+            };
+
+            if (loading) return <div className="flex justify-center items-center h-full text-gray-500"><i className="fas fa-spinner fa-spin mr-2"></i>読み込み中...</div>;
+            if (!profile || !options) return <div className="p-4 text-red-500">データ読み込みエラー</div>;
+
+            return (
+                <div className="h-full overflow-y-auto p-4 md:p-6 bg-gray-50">
+                    <div className="max-w-3xl mx-auto bg-white rounded-lg shadow-sm p-6">
+                        <h2 className="text-xl font-bold mb-6 text-gray-800 border-b pb-2"><i className="fas fa-user-edit mr-2"></i>プロフィール編集</h2>
+
+                        {msg.text && (
+                            <div className={`mb-4 p-3 rounded text-sm ${msg.type==='success'?'bg-green-50 text-green-700':'bg-red-50 text-red-700'}`}>
+                                {msg.text}
+                            </div>
+                        )}
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                            <div>
+                                <label className="block text-xs font-bold text-gray-500 mb-1">氏名 (変更不可)</label>
+                                <input type="text" value={profile.name} disabled className="w-full bg-gray-100 border p-2 rounded text-sm text-gray-500" />
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold text-gray-500 mb-1">メールアドレス (変更不可)</label>
+                                <input type="text" value={profile.email} disabled className="w-full bg-gray-100 border p-2 rounded text-sm text-gray-500" />
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-bold text-gray-700 mb-1">学籍番号</label>
+                                <input type="text" value={profile.studentId} onChange={e=>handleChange('studentId', e.target.value)} className="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-400" />
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold text-gray-700 mb-1">電話番号</label>
+                                <input type="tel" value={profile.phone} onChange={e=>handleChange('phone', e.target.value)} className="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-400" />
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 mb-1">学年</label>
+                                    <select value={profile.grade} onChange={e=>handleChange('grade', e.target.value)} className="w-full border p-2 rounded text-sm bg-white">
+                                        <option value="">選択</option>
+                                        {options.grades.map(o=><option key={o} value={o}>{o}</option>)}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 mb-1">分野</label>
+                                    <select value={profile.field} onChange={e=>handleChange('field', e.target.value)} className="w-full border p-2 rounded text-sm bg-white">
+                                        <option value="">選択</option>
+                                        {options.fields.map(o=><option key={o} value={o}>{o}</option>)}
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-bold text-gray-700 mb-1">生年月日 (YYYY/MM/DD)</label>
+                                <input type="text" value={profile.birthday} onChange={e=>handleChange('birthday', e.target.value)} className="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-400" placeholder="2000/01/01" />
+                            </div>
+                             <div>
+                                <label className="block text-xs font-bold text-gray-700 mb-1">出身校</label>
+                                <input type="text" value={profile.almaMater} onChange={e=>handleChange('almaMater', e.target.value)} className="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-400" />
+                            </div>
+                        </div>
+
+                        <h3 className="text-sm font-bold text-gray-700 mb-3 border-b pb-1">所属情報 (最大5つ)</h3>
+                        <div className="space-y-3 mb-6">
+                            {profile.orgs.map((orgData, idx) => (
+                                <div key={idx} className="flex flex-col md:flex-row gap-2 p-3 bg-gray-50 rounded border">
+                                    <div className="flex-1">
+                                        <label className="text-[10px] text-gray-500">所属局</label>
+                                        <select value={orgData.org} onChange={e=>handleOrgChange(idx, 'org', e.target.value)} className="w-full border p-1 rounded text-sm bg-white">
+                                            <option value="">なし</option>
+                                            {options.orgs.map(o=><option key={o} value={o}>{o}</option>)}
+                                        </select>
+                                    </div>
+                                    <div className="flex-1">
+                                        <label className="text-[10px] text-gray-500">所属部門</label>
+                                        <select value={orgData.dept} onChange={e=>handleOrgChange(idx, 'dept', e.target.value)} className="w-full border p-1 rounded text-sm bg-white">
+                                            <option value="">なし</option>
+                                            {options.deptMaster.filter(d=>!orgData.org || d.org===orgData.org).map(d=><option key={d.dept} value={d.dept}>{d.dept}</option>)}
+                                        </select>
+                                    </div>
+                                    <div className="flex-1">
+                                        <label className="text-[10px] text-gray-500">役職</label>
+                                        <select value={orgData.role} onChange={e=>handleOrgChange(idx, 'role', e.target.value)} className="w-full border p-1 rounded text-sm bg-white">
+                                            <option value="">なし</option>
+                                            {options.roles.map(o=><option key={o} value={o}>{o}</option>)}
+                                        </select>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+
+                        <div className="text-right">
+                            <button onClick={handleSave} disabled={saving} className="bg-blue-600 text-white px-8 py-3 rounded-lg font-bold shadow-lg hover:bg-blue-700 transition active:scale-95 disabled:bg-gray-400">
+                                {saving ? <i className="fas fa-spinner fa-spin"></i> : '保存する'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function RecipientSelector({ recipients, setRecipients, onAddClick, labelText }) {
+            return (
+                <div className="space-y-2 h-full flex flex-col">
+                    <div className="flex justify-between items-end">
+                        <label className="font-bold text-gray-700 block text-sm md:text-base">
+                            <i className="fas fa-users mr-1"></i> {labelText || "対象ユーザー"}
+                            <span className="ml-2 bg-gray-200 text-gray-700 px-2 py-0.5 rounded-full text-xs">{recipients.length}名</span>
+                        </label>
+                        <button onClick={onAddClick} className="text-sm bg-gray-700 text-white px-3 py-1.5 md:px-4 md:py-1.5 rounded hover:bg-gray-900 shadow-sm active:scale-95 transition-transform">
+                            <i className="fas fa-plus mr-1"></i> 追加
+                        </button>
+                    </div>
+                    <div className="border border-gray-300 rounded-lg bg-gray-50 flex-1 overflow-y-auto p-2 min-h-[150px]">
+                        {recipients.length === 0 ? (
+                            <div className="h-full flex items-center justify-center text-gray-400 text-sm">ユーザーが選択されていません</div>
+                        ) : (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                {recipients.map(r => (
+                                    <div key={r.email} className="flex justify-between items-center bg-white p-2 px-3 rounded border border-gray-200 shadow-sm animate-fade-in">
+                                        <div className="min-w-0 overflow-hidden">
+                                            <div className="font-bold text-sm text-gray-800 truncate">{r.name}</div>
+                                            <div className="text-xs text-gray-500 truncate mb-1">{r.email}</div>
+                                            {(r.grade || r.field) && (
+                                                <div className="text-xs text-blue-600 truncate flex items-center">
+                                                    <i className="fas fa-school mr-1"></i>
+                                                    {r.grade} {r.field}
+                                                </div>
+                                            )}
+                                            <div className="text-xs text-gray-500 truncate mt-1" title={r.department}>{r.department}</div>
+                                        </div>
+                                        <button onClick={()=>setRecipients(recipients.filter(x=>x.email!==r.email))} className="text-gray-400 hover:text-red-500 ml-2 p-2">
+                                            <i className="fas fa-times text-lg"></i>
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        function DmTab({ currentUserEmail }) {
+            const [message, setMessage] = useState('');
+            const [recipients, setRecipients] = useState([]);
+            const [modalOpen, setModalOpen] = useState(false);
+            const [sending, setSending] = useState(false);
+            const [progress, setProgress] = useState(0);
+            const [result, setResult] = useState(null);
+            const [dialog, setDialog] = useState({ isOpen: false, type: 'alert', message: '', onOk: null, onCancel: null });
+            const txtRef = useRef(null);
+
+            const insertMention = () => {
+                const t = txtRef.current;
+                if(t){
+                    const v = t.value;
+                    const p = t.selectionStart;
+                    setMessage(v.slice(0,p)+"{mention}"+v.slice(t.selectionEnd));
+                    setTimeout(() => t.focus(), 0);
+                }
+            };
+
+            const closeDialog = () => setDialog(prev => ({ ...prev, isOpen: false }));
+
+            const handleSendClick = () => {
+                if(!recipients.length) {
+                    setDialog({ isOpen: true, type: 'alert', message: "送信先を選択してください", onOk: closeDialog });
+                    return;
+                }
+                if(!message.trim()) {
+                    setDialog({ isOpen: true, type: 'alert', message: "メッセージを入力してください", onOk: closeDialog });
+                    return;
+                }
+                setDialog({
+                    isOpen: true, type: 'confirm', message: "【確認】本当に送信しますか？",
+                    onOk: executeSend, onCancel: closeDialog
+                });
+            };
+
+            const executeSend = async () => {
+                closeDialog();
+                setSending(true); setProgress(0); setResult(null);
+                const token = localStorage.getItem('slack_app_session');
+                try {
+                    const res = await processInBatches(recipients, 10, (batch) => runGas('sendDMs', token, message, batch), (pct) => setProgress(pct));
+                    const failedEmails = new Set(res.failed.map(f => f.email));
+                    const failedDetails = res.failed.map(f => {
+                        const original = recipients.find(r => r.email === f.email);
+                        return { email: f.email, error: f.error, name: original ? original.name : '不明' };
+                    });
+                    setRecipients(recipients.filter(r => failedEmails.has(r.email)));
+                    setResult({ success: res.success, failed: failedDetails });
+                } catch(e) {
+                    setDialog({ isOpen: true, type: 'alert', message: "エラー: " + e.message, onOk: closeDialog });
+                } finally { setSending(false); }
+            };
+
+            return (
+                <div className="flex flex-col h-full p-3 md:p-6 space-y-3 md:space-y-4 overflow-y-auto">
+                    <div className="space-y-2 shrink-0">
+                        <div className="flex justify-between items-end">
+                            <label className="font-bold text-gray-700 block text-sm md:text-base">メッセージ本文</label>
+                            <button onClick={insertMention} className="text-xs bg-blue-50 text-blue-600 border border-blue-200 px-3 py-1 rounded active:bg-blue-100">@メンション</button>
+                        </div>
+                        <textarea ref={txtRef} className="w-full border border-gray-300 p-2 md:p-3 h-24 md:h-32 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none resize-none shadow-sm text-sm" value={message} onChange={e=>setMessage(e.target.value)}></textarea>
+                    </div>
+                    <div className="flex-1 min-h-0">
+                        <RecipientSelector recipients={recipients} setRecipients={setRecipients} onAddClick={()=>setModalOpen(true)} />
+                    </div>
+                    <div className="pt-2 md:pt-4 shrink-0 pb-2">
+                        <button onClick={handleSendClick} disabled={sending || !recipients.length} className={`w-full py-3 md:py-4 rounded-lg font-bold text-base md:text-lg shadow-md transition active:scale-95 ${sending?'bg-gray-400':'bg-blue-600 hover:bg-blue-700 text-white'}`}>
+                            {sending ? `送信中 (${progress}%)` : <span><i className="far fa-paper-plane mr-2"></i>DMを一斉送信</span>}
+                        </button>
+                    </div>
+                    {modalOpen && <SearchModal currentUserEmail={currentUserEmail} onClose={()=>setModalOpen(false)} onAdd={(ls)=>{
+                        const ids = new Set(recipients.map(r=>r.email));
+                        setRecipients([...recipients, ...ls.filter(r=>!ids.has(r.email))]);
+                        setModalOpen(false);
+                    }} />}
+                    {result && <ResultModal result={result} onClose={()=>setResult(null)} />}
+                    <DialogModal isOpen={dialog.isOpen} type={dialog.type} message={dialog.message} onOk={dialog.onOk} onCancel={dialog.onCancel} />
+                </div>
+            );
+        }
+
+        function ChannelTab({ currentUserEmail }) {
+            const [channels, setChannels] = useState([]);
+            const [selectedChannel, setSelectedChannel] = useState('');
+            const [recipients, setRecipients] = useState([]);
+            const [loadingChannels, setLoadingChannels] = useState(false);
+            const [modalOpen, setModalOpen] = useState(false);
+            const [sending, setSending] = useState(false);
+            const [progress, setProgress] = useState(0);
+            const [result, setResult] = useState(null);
+            const [dialog, setDialog] = useState({ isOpen: false, type: 'alert', message: '', onOk: null, onCancel: null });
+
+            const closeDialog = () => setDialog(prev => ({ ...prev, isOpen: false }));
+
+            useEffect(() => {
+                setLoadingChannels(true);
+                runGas('getChannels', localStorage.getItem('slack_app_session'))
+                    .then(setChannels)
+                    .catch(e => setDialog({ isOpen: true, type: 'alert', message: "チャンネル取得エラー: " + e.message, onOk: closeDialog }))
+                    .finally(() => setLoadingChannels(false));
+            }, []);
+
+            const handleInviteClick = () => {
+                if(!selectedChannel) { setDialog({ isOpen: true, type: 'alert', message: "チャンネルを選択してください", onOk: closeDialog }); return; }
+                if(!recipients.length) { setDialog({ isOpen: true, type: 'alert', message: "ユーザーを選択してください", onOk: closeDialog }); return; }
+                setDialog({ isOpen: true, type: 'confirm', message: "実行しますか？", onOk: executeInvite, onCancel: closeDialog });
+            };
+
+            const executeInvite = async () => {
+                closeDialog();
+                setSending(true); setProgress(0); setResult(null);
+                const token = localStorage.getItem('slack_app_session');
+                try {
+                    const res = await processInBatches(recipients, 5, (batch) => runGas('inviteToChannel', token, selectedChannel, batch), (pct) => setProgress(pct));
+                    const failedEmails = new Set(res.failed.map(f => f.email));
+                    const failedDetails = res.failed.map(f => {
+                        const original = recipients.find(r => r.email === f.email);
+                        return { email: f.email, error: f.error, name: original ? original.name : '不明' };
+                    });
+                    setRecipients(recipients.filter(r => failedEmails.has(r.email)));
+                    setResult({ success: res.success, failed: failedDetails });
+                } catch(e) { setDialog({ isOpen: true, type: 'alert', message: "エラー: " + e.message, onOk: closeDialog }); }
+                finally { setSending(false); }
+            };
+
+            return (
+                <div className="flex flex-col h-full p-3 md:p-6 space-y-3 md:space-y-4 overflow-y-auto">
+                    <div className="space-y-2 shrink-0">
+                        <label className="font-bold text-gray-700 block text-sm md:text-base">追加先のチャンネル</label>
+                        <select value={selectedChannel} onChange={e=>setSelectedChannel(e.target.value)} disabled={loadingChannels} className="w-full border border-gray-300 p-2 md:p-3 rounded-lg bg-white text-sm">
+                            <option value="">選択してください...</option>
+                            {channels.map(c => <option key={c.id} value={c.id}>{c.is_private ? '🔒 ' : '# '}{c.name}</option>)}
+                        </select>
+                        <p className="text-xs text-gray-500">※ あなたが参加しているチャンネルのみ表示されます。</p>
+                    </div>
+                    <div className="flex-1 min-h-0">
+                        <RecipientSelector labelText="招待するユーザー" recipients={recipients} setRecipients={setRecipients} onAddClick={()=>setModalOpen(true)} />
+                    </div>
+                    <div className="pt-2 md:pt-4 shrink-0 pb-2">
+                        <button onClick={handleInviteClick} disabled={sending || !recipients.length} className={`w-full py-3 md:py-4 rounded-lg font-bold text-base md:text-lg shadow-md transition active:scale-95 ${sending?'bg-gray-400':'bg-green-600 hover:bg-green-700 text-white'}`}>
+                            {sending ? `処理中 (${progress}%)` : <span><i className="fas fa-user-plus mr-2"></i>チャンネルに追加</span>}
+                        </button>
+                    </div>
+                    {modalOpen && <SearchModal currentUserEmail={currentUserEmail} onClose={()=>setModalOpen(false)} onAdd={(ls)=>{
+                        const ids = new Set(recipients.map(r=>r.email));
+                        setRecipients([...recipients, ...ls.filter(r=>!ids.has(r.email))]);
+                        setModalOpen(false);
+                    }} />}
+                    {result && <ResultModal result={result} onClose={()=>setResult(null)} />}
+                    <DialogModal isOpen={dialog.isOpen} type={dialog.type} message={dialog.message} onOk={dialog.onOk} onCancel={dialog.onCancel} />
+                </div>
+            );
+        }
+
+        function SearchModal({ onClose, onAdd, currentUserEmail }) {
+            const [criteria, setCriteria] = useState({ query: '', grade: '', field: '', org: '', dept: '', role: '' });
+            const [options, setOptions] = useState({ grades:[], fields:[], orgs:[], roles:[], deptMaster:[] });
+            const [availableDepts, setAvailableDepts] = useState([]);
+            const [res, setRes] = useState([]);
+            const [sel, setSel] = useState(new Set());
+            const [loading, setLoading] = useState(true);
+            const [showFilters, setShowFilters] = useState(false);
+
+            useEffect(() => {
+                runGas('getSearchOptions').then(setOptions);
+                search(criteria);
+            }, []);
+
+            useEffect(() => {
+                if (criteria.org) {
+                    const filtered = options.deptMaster.filter(d => d.org === criteria.org).map(d => d.dept);
+                    setAvailableDepts([...new Set(filtered)].sort());
+                } else {
+                    const allDepts = options.deptMaster.map(d => d.dept);
+                    setAvailableDepts([...new Set(allDepts)].sort());
+                }
+            }, [criteria.org, options.deptMaster]);
+
+            const handleFilterChange = (key, value) => {
+                let newCriteria = { ...criteria, [key]: value };
+                if (key === 'org') newCriteria.dept = '';
+                setCriteria(newCriteria);
+                search(newCriteria);
+            };
+
+            const search = (currentCriteria) => {
+                setLoading(true);
+                runGas('searchRecipients', currentCriteria).then(data => {
+                    const filtered = data.filter(r => r.email !== currentUserEmail);
+                    setRes(filtered);
+                }).finally(() => setLoading(false));
+            };
+
+            const toggle = (m) => {
+                const s = new Set(sel);
+                if(s.has(m)) s.delete(m); else s.add(m);
+                setSel(s);
+            };
+
+            const toggleAll = () => {
+                const s = new Set(sel);
+                const all = res.length > 0 && res.every(r => sel.has(r.email));
+                res.forEach(r => all ? s.delete(r.email) : s.add(r.email));
+                setSel(s);
+            };
+
+            return (
+                <div className="fixed inset-0 flex items-center justify-center modal-overlay p-2 z-[100]">
+                    <div className="bg-white w-full max-w-4xl rounded-xl shadow-2xl flex flex-col h-[95dvh] md:h-[90vh] overflow-hidden">
+                        <div className="p-3 md:p-4 border-b bg-white shrink-0">
+                            <div className="flex justify-between items-center mb-2">
+                                <h3 className="font-bold text-gray-700 text-sm md:text-base">ユーザー検索</h3>
+                                <button onClick={() => setShowFilters(!showFilters)} className="md:hidden text-blue-600 text-xs font-bold bg-blue-50 px-3 py-1.5 rounded active:bg-blue-100">
+                                    <i className={`fas fa-filter mr-1`}></i>
+                                    {showFilters ? 'フィルターを閉じる' : 'フィルター設定'}
+                                </button>
+                            </div>
+                            <div className={`${showFilters ? 'grid' : 'hidden'} md:grid grid-cols-2 md:grid-cols-3 gap-2 mb-2 animate-fade-in`}>
+                                {[
+                                    { k: 'grade', l: '学年', opt: options.grades },
+                                    { k: 'field', l: '分野', opt: options.fields },
+                                    { k: 'org', l: '局', opt: options.orgs },
+                                    { k: 'dept', l: '部門', opt: availableDepts },
+                                    { k: 'role', l: '役職', opt: options.roles }
+                                ].map(f => (
+                                    <select key={f.k} className="border p-2 rounded text-xs md:text-sm bg-gray-50 outline-none" value={criteria[f.k]} onChange={e=>handleFilterChange(f.k, e.target.value)}>
+                                        <option value="">{f.l}: ALL</option>
+                                        {f.opt.map(o=><option key={o} value={o}>{o}</option>)}
+                                    </select>
+                                ))}
+                            </div>
+                            <input className="w-full border p-2 md:p-2.5 rounded text-sm md:text-base focus:ring-2 focus:ring-blue-400 outline-none bg-gray-50" value={criteria.query} onChange={e=>handleFilterChange('query', e.target.value)} placeholder="名前やメールで検索..." />
+                        </div>
+                        <div className="px-3 py-2 bg-blue-600 flex justify-between text-xs font-bold text-white uppercase tracking-wider shrink-0 items-center">
+                            <span>検索結果: {res.length}</span>
+                            <button onClick={toggleAll} className="bg-white/20 px-3 py-1 rounded hover:bg-white/30 transition active:bg-white/40">全選択 / 解除</button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-2 space-y-1 bg-gray-100">
+                            {loading ? (
+                                <div className="text-center py-10 text-gray-500"><i className="fas fa-spinner fa-spin mr-2"></i></div>
+                            ) : res.map(r => (
+                                <div key={r.email} onClick={()=>toggle(r.email)} className={`p-2 rounded-lg border transition-all flex items-center bg-white ${sel.has(r.email)?'border-blue-500 bg-blue-50 shadow-sm':'border-gray-200'} active:bg-gray-50`}>
+                                    <div className={`w-5 h-5 min-w-[20px] rounded-full border mr-3 flex items-center justify-center ${sel.has(r.email)?'bg-blue-500 border-blue-500':'border-gray-300'}`}>
+                                        {sel.has(r.email) && <i className="fas fa-check text-white text-[10px]"></i>}
+                                    </div>
+                                    <div className="overflow-hidden w-full">
+                                        <div className="flex justify-between items-center">
+                                            <div className="font-bold text-gray-800 text-sm truncate">{r.name}</div>
+                                            <div className="text-[10px] bg-white border border-blue-200 text-blue-700 px-1.5 py-0.5 rounded ml-2 whitespace-nowrap flex items-center">
+                                                <i className="fas fa-school mr-1"></i>{r.grade} {r.field}
+                                            </div>
+                                        </div>
+                                        <div className="text-xs text-gray-500 truncate mt-0.5">{r.department}</div>
+                                    </div>
+                                </div>
+                            ))}
+                            {!loading && res.length === 0 && <div className="text-center py-10 text-gray-400 text-xs">該当なし</div>}
+                        </div>
+                        <div className="p-3 md:p-4 border-t flex space-x-2 bg-white shadow-[0_-2px_10px_rgba(0,0,0,0.05)] shrink-0 pb-safe">
+                            <button onClick={onClose} className="flex-1 py-3 rounded-lg text-sm font-medium text-gray-600 transition-colors bg-gray-100 active:bg-gray-200">キャンセル</button>
+                            <button onClick={()=>onAdd(res.filter(r=>sel.has(r.email)))} className="flex-[2] bg-blue-600 text-white py-3 rounded-lg font-bold shadow-lg hover:bg-blue-700 text-sm transition-all active:scale-95 active:bg-blue-800">追加 ({sel.size})</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function ResultModal({ result, onClose }) {
+            return (
+                <div className="fixed inset-0 flex items-center justify-center modal-overlay p-4 z-50">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 flex flex-col max-h-[80vh]">
+                        <div className="text-center mb-6">
+                            <h3 className="text-xl font-bold">完了</h3>
+                            <div className="flex justify-center space-x-4 mt-2 text-sm">
+                                <span className="text-green-600 font-bold">成功: {result.success}件</span>
+                                {result.failed.length > 0 && <span className="text-red-600 font-bold">失敗: {result.failed.length}件</span>}
+                            </div>
+                        </div>
+                        {result.failed.length > 0 && (
+                            <div className="flex-1 overflow-y-auto bg-red-50 p-4 rounded-lg mb-4 text-sm border border-red-100">
+                                <ul className="space-y-3">
+                                    {result.failed.map((f, i) => (
+                                        <li key={i}>
+                                            <div className="font-bold">{f.name}</div>
+                                            <div className="text-xs text-red-500">{f.error}</div>
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                        )}
+                        <button onClick={onClose} className="w-full bg-gray-800 text-white py-3 rounded-lg font-bold hover:bg-gray-900 transition active:scale-95">閉じる</button>
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
