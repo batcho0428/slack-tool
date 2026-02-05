@@ -55,28 +55,7 @@
                         .withFailureHandler(reject)
                         [funcName](...args);
                 } else {
-                    console.log(`[Mock] Calling ${funcName}`, args);
-                    setTimeout(() => {
-                        // モックデータ定義
-                        if (funcName === 'getLoginUser') resolve({ status: 'authorized', user: { name: "MockUser", email: "mock@example.com" } });
-                        else if (funcName === 'getChannels') resolve([{id:'C1', name:'general'}, {id:'C2', name:'random', is_private:true}]);
-                        else if (funcName === 'getSearchOptions') resolve({
-                            grades: ["B1", "B2", "B3", "B4", "M1", "M2"],
-                            fields: ["Info", "Mech", "Elec"],
-                            roles: ["部長", "メンバー"],
-                            orgs: ["局A", "局B"],
-                            deptMaster: [{org: "局A", dept: "開発部"}, {org: "局A", dept: "広報部"}, {org: "局B", dept: "営業部"}]
-                        });
-                        else if (funcName === 'searchRecipients') resolve(Array(5).fill(0).map((_,i)=>({name:`User ${i}`, email:`u${i}@ex.com`, department:"局A 開発部", grade:"B4", field:"Info"})));
-                        else if (funcName === 'requestLoginOtp') resolve({ success: true });
-                        else if (funcName === 'verifyLoginOtp') resolve({ success: true, token: 'mock-session-token' });
-                        else if (funcName === 'getUserProfile') resolve({
-                            name: "MockUser", email: "mock@example.com", studentId: "12345678", grade: "B3", field: "Info", phone: "09000000000", birthday: "2000/01/01", almaMater: "HighSchool",
-                            orgs: [{org:"局A", dept:"開発部", role:"Member"}, {}, {}, {}, {}]
-                        });
-                        else if (funcName === 'updateUserProfile') resolve({ success: true });
-                        else resolve({ success: args[args.length-1].length, failed: [] });
-                    }, 800);
+                    reject(new Error('Google Apps Script環境が必要です'));
                 }
             });
         };
@@ -104,14 +83,25 @@
             return (
                 <div className="fixed inset-0 flex items-center justify-center modal-overlay p-4 z-[200]">
                     <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6 flex flex-col animate-fade-in">
-                        <h3 className="text-lg font-bold mb-4 text-gray-800">{type === 'confirm' ? '確認' : '通知'}</h3>
-                        <p className="text-gray-600 mb-6 whitespace-pre-wrap text-sm">{message}</p>
-                        <div className="flex space-x-3 justify-end">
-                            {type === 'confirm' && (
-                                <button onClick={onCancel} className="px-4 py-2 rounded-lg text-gray-600 bg-gray-100 hover:bg-gray-200 font-medium text-sm transition-colors">キャンセル</button>
-                            )}
-                            <button onClick={onOk} className="px-4 py-2 rounded-lg text-white bg-blue-600 hover:bg-blue-700 font-bold text-sm shadow-md transition-transform active:scale-95">OK</button>
-                        </div>
+                        {type === 'loading' ? (
+                            <>
+                                <div className="flex flex-col items-center justify-center py-4">
+                                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div>
+                                    <p className="text-gray-600 text-sm">{message}</p>
+                                </div>
+                            </>
+                        ) : (
+                            <>
+                                <h3 className="text-lg font-bold mb-4 text-gray-800">{type === 'confirm' ? '確認' : '通知'}</h3>
+                                <p className="text-gray-600 mb-6 whitespace-pre-wrap text-sm">{message}</p>
+                                <div className="flex space-x-3 justify-end">
+                                    {type === 'confirm' && (
+                                        <button onClick={onCancel} className="px-4 py-2 rounded-lg text-gray-600 bg-gray-100 hover:bg-gray-200 font-medium text-sm transition-colors">キャンセル</button>
+                                    )}
+                                    <button onClick={onOk} className="px-4 py-2 rounded-lg text-white bg-blue-600 hover:bg-blue-700 font-bold text-sm shadow-md transition-transform active:scale-95">OK</button>
+                                </div>
+                            </>
+                        )}
                     </div>
                 </div>
             );
@@ -133,7 +123,13 @@
 
             const checkLogin = (token) => {
                 runGas('getLoginUser', token).then(res => {
-                    if (res.status === 'authorized') { setUser(res.user); setView('main'); }
+                    if (res.status === 'authorized') {
+                        setUser({ ...res.user, hasToken: !!res.hasToken });
+                        setView('main');
+                        if (!res.hasToken) {
+                            runGas('getAuthUrl').then(url => setAuthUrl(url)).catch(()=>{});
+                        }
+                    }
                     else if (res.status === 'guest') { runGas('getAuthUrl').then(url => { setAuthUrl(url); setView('guest'); }); }
                     else { throw new Error(res.message); }
                 }).catch(e => { setErrorMsg(e.message); setView('error'); });
@@ -175,7 +171,7 @@
                                 </div>
                             )}
                             {view === 'guest' && <GuestScreen authUrl={authUrl} onLoginSuccess={checkLogin} />}
-                            {view === 'main' && user && <MainScreen user={user} />}
+                            {view === 'main' && user && <MainScreen user={user} authUrl={authUrl} />}
                         </div>
                     </div>
                     <DialogModal isOpen={logoutDialog} type="confirm" message="ログアウトしますか？" onOk={executeLogout} onCancel={()=>setLogoutDialog(false)} />
@@ -228,7 +224,7 @@
                         {step === 1 ? (
                             <form onSubmit={handleRequestOtp} className="space-y-4">
                                 <p className="text-sm text-gray-600">
-                                    登録済みのメールアドレスを入力してください。<br/>Slack Botから認証コードが送信されます。
+                                    登録済みのメールアドレスを入力してください。<br/>Slack Botから認証コードとログインURLが送信されます。
                                 </p>
                                 <div>
                                     <label className="block text-xs font-bold text-gray-500 mb-1">メールアドレス</label>
@@ -241,7 +237,8 @@
                         ) : (
                             <form onSubmit={handleVerifyOtp} className="space-y-4">
                                 <p className="text-sm text-gray-600">
-                                    Slack Botから送信された6桁のコードを入力してください。
+                                    Slack Botから送信された6桁のコードを入力してください。<br/>
+                                    コードの下のURLからもログインできます。
                                 </p>
                                 <div>
                                     <label className="block text-xs font-bold text-gray-500 mb-1">認証コード</label>
@@ -259,7 +256,7 @@
 
                     <div className="w-full max-w-md text-center">
                         <p className="text-xs text-gray-500 mb-2">- または -</p>
-                        <button onClick={() => window.top.location.href = authUrl} className="w-full bg-[#4A154B] text-white font-bold py-3 rounded-lg shadow hover:bg-[#381039] transition flex items-center justify-center text-sm">
+                        <button onClick={() => { if (typeof authUrl !== 'undefined' && authUrl) window.top.location.href = authUrl; }} className="w-full bg-[#4A154B] text-white font-bold py-3 rounded-lg shadow hover:bg-[#381039] transition flex items-center justify-center text-sm">
                             <i className="fab fa-slack text-lg mr-2"></i> Slackアカウントでログイン (PC推奨)
                         </button>
                     </div>
@@ -267,7 +264,7 @@
             );
         }
 
-        function MainScreen({ user }) {
+        function MainScreen({ user, authUrl }) {
             const [tab, setTab] = useState('dm');
             return (
                 <div className="flex flex-col h-full">
@@ -281,12 +278,275 @@
                         <button onClick={() => setTab('mypage')} className={`flex-1 py-3 text-center font-bold text-sm border-b-2 transition ${tab === 'mypage' ? 'border-purple-600 text-purple-600 bg-white' : 'border-transparent text-gray-500 hover:bg-gray-100'}`}>
                             <i className="fas fa-id-card mr-2"></i> マイページ
                         </button>
+                        <button onClick={() => setTab('roster')} className={`flex-1 py-3 text-center font-bold text-sm border-b-2 transition ${tab === 'roster' ? 'border-indigo-600 text-indigo-600 bg-white' : 'border-transparent text-gray-500 hover:bg-gray-100'}`}>
+                            <i className="fas fa-list mr-2"></i> 名簿
+                        </button>
                     </div>
                     <div className="flex-1 overflow-hidden relative">
-                        {tab === 'dm' && <DmTab currentUserEmail={user.email} />}
-                        {tab === 'channel' && <ChannelTab currentUserEmail={user.email} />}
+                        {tab === 'dm' && <DmTab user={user} authUrl={authUrl} />}
+                        {tab === 'channel' && <ChannelTab user={user} authUrl={authUrl} />}
                         {tab === 'mypage' && <MyPage />}
+                        {tab === 'roster' && <RosterTab user={user} />}
                     </div>
+                </div>
+            );
+        }
+
+        function RosterTab({ user }) {
+            const [isAdmin, setIsAdmin] = useState(false);
+            const [fields] = useState([
+                { key: '氏名', label: '氏名', adminOnly: false },
+                { key: 'Name', label: 'Name', adminOnly: false },
+                { key: '学籍番号', label: '学籍番号', adminOnly: true },
+                { key: '分野', label: '分野', adminOnly: false },
+                { key: 'メールアドレス', label: 'メールアドレス', adminOnly: false },
+                { key: '電話番号', label: '電話番号', adminOnly: true },
+                { key: '生年月日', label: '生年月日', adminOnly: true },
+                { key: '出身校', label: '出身校', adminOnly: true },
+                { key: '所属局1', label: '所属局1', adminOnly: false },
+                { key: '所属部門1', label: '所属部門1', adminOnly: false },
+                { key: '役職1', label: '役職1', adminOnly: false },
+                { key: '所属局2～5', label: '所属局2～5', adminOnly: false },
+                { key: '所属部門2～5', label: '所属部門2～5', adminOnly: false },
+                { key: '役職2～5', label: '役職2～5', adminOnly: false },
+                { key: '車所有', label: '車所有', adminOnly: true },
+                { key: 'Admin', label: 'Admin', adminOnly: true }
+            ]);
+
+            const [selected, setSelected] = useState(new Set());
+            const [selectAll, setSelectAll] = useState(false);
+            const [modalOpen, setModalOpen] = useState(false);
+            const [filename, setFilename] = useState('');
+            const [busy, setBusy] = useState(false);
+
+            // 対象選択（全員 or 局ごと）
+            const [targetType, setTargetType] = useState('all'); // 'all' or 'orgs'
+            const [orgMatchMode, setOrgMatchMode] = useState('mainOnly'); // 'mainOnly' or 'allAffiliations'
+            const [orgList, setOrgList] = useState([]); // [{name, depts: []}]
+            const [orgChecked, setOrgChecked] = useState({}); // {orgName: true}
+            const [deptChecked, setDeptChecked] = useState({}); // {orgName: {deptName: true}}
+
+            useEffect(() => {
+                const token = localStorage.getItem('slack_app_session');
+                runGas('getUserProfile', token).then(p => { setIsAdmin(!!p.isAdmin); }).catch(()=>{});
+
+                // デフォルトファイル名（Tokyo timezone）
+                const now = new Date();
+                const parts = now.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', hour12: false });
+                const nums = parts.replace(/[^0-9]/g, '');
+                const defName = 'list_' + nums.slice(0,14);
+                setFilename(defName + '.csv');
+
+                // 取得して局・部門を構築
+                runGas('getSearchOptions').then(o => {
+                    try {
+                        const orgs = (o && o.orgs) ? Array.from(new Set(o.orgs)) : [];
+                        const deptMaster = o && o.deptMaster ? o.deptMaster : [];
+                        const map = orgs.map(org => ({ name: org, depts: [] }));
+                        const m = {};
+                        orgs.forEach(org => { m[org] = new Set(); });
+                        deptMaster.forEach(d => { if (d.org && d.dept && m[d.org]) m[d.org].add(d.dept); });
+                        const final = orgs.map(org => ({ name: org, depts: Array.from(m[org] || []) }));
+                        setOrgList(final);
+                        const oc = {}; const dc = {};
+                        final.forEach(o2 => { oc[o2.name] = false; dc[o2.name] = {}; o2.depts.forEach(d=>dc[o2.name][d]=false); });
+                        setOrgChecked(oc); setDeptChecked(dc);
+                    } catch (e) { console.warn(e); }
+                }).catch(()=>{});
+            }, []);
+
+            const toggleField = (k, adminOnly) => {
+                if (adminOnly && !isAdmin) return;
+                const s = new Set(Array.from(selected));
+                if (s.has(k)) s.delete(k); else s.add(k);
+                setSelected(s);
+                // update selectAll state
+                const available = fields.filter(f=>!(f.adminOnly && !isAdmin)).map(f=>f.key);
+                const allSelected = available.every(a=>s.has(a));
+                setSelectAll(allSelected);
+            };
+
+            const toggleSelectAll = () => {
+                const available = fields.filter(f=>!(f.adminOnly && !isAdmin)).map(f=>f.key);
+                if (selectAll) {
+                    setSelected(new Set());
+                    setSelectAll(false);
+                } else {
+                    setSelected(new Set(available));
+                    setSelectAll(true);
+                }
+            };
+
+            useEffect(()=>{
+                const available = fields.filter(f=>!(f.adminOnly && !isAdmin)).map(f=>f.key);
+                const allSelected = available.length>0 && available.every(a=>selected.has(a));
+                setSelectAll(allSelected);
+            }, [isAdmin, selected]);
+
+            // available keys for UI disabling
+            const availableKeys = fields.filter(f=>!(f.adminOnly && !isAdmin)).map(f=>f.key);
+
+            const toggleOrg = (orgName) => {
+                const oc = { ...orgChecked, [orgName]: !orgChecked[orgName] };
+                setOrgChecked(oc);
+                // toggle all depts
+                const dc = { ...deptChecked };
+                const map = dc[orgName] || {};
+                const newMap = {};
+                Object.keys(map).forEach(k => { newMap[k] = !orgChecked[orgName]; });
+                dc[orgName] = newMap;
+                setDeptChecked(dc);
+            };
+
+            const toggleDept = (orgName, deptName) => {
+                const dc = { ...deptChecked };
+                if (!dc[orgName]) dc[orgName] = {};
+                dc[orgName][deptName] = !dc[orgName][deptName];
+                setDeptChecked(dc);
+            };
+
+            const openExportModal = async () => { setModalOpen(true); };
+
+            const doExport = async () => {
+                if (selected.size === 0) { alert('出力項目を選択してください'); return; }
+                setBusy(true);
+                try {
+                    const token = localStorage.getItem('slack_app_session');
+                    const arr = Array.from(selected);
+
+                    // 絞り込み条件を構築
+                    let filter = { type: 'all' };
+                    if (targetType === 'orgs') {
+                        const sels = [];
+                        orgList.forEach(o => {
+                            const allDepts = (o.depts || []);
+                            const checkedDepts = (deptChecked[o.name]) ? Object.keys(deptChecked[o.name]).filter(d=>deptChecked[o.name][d]) : [];
+                            if (orgChecked[o.name]) {
+                                // org checked -> if all departments checked or none specific, add org-only match
+                                if (checkedDepts.length === 0 || checkedDepts.length === allDepts.length) {
+                                    sels.push({ org: o.name, dept: '' });
+                                } else {
+                                    checkedDepts.forEach(d=>sels.push({ org: o.name, dept: d }));
+                                }
+                            } else {
+                                // org not checked but some depts checked
+                                if (checkedDepts.length > 0) checkedDepts.forEach(d=>sels.push({ org: o.name, dept: d }));
+                            }
+                        });
+                        filter = { type: 'orgs', orgMatchMode: orgMatchMode, selections: sels };
+                    }
+
+                    // 出力ボタンを押した時刻（Tokyo）をファイル名にしてサーバへ送る
+                    const now = new Date();
+                    const fmt = new Intl.DateTimeFormat('ja-JP', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+                    const parts = fmt.formatToParts(now);
+                    const get = (type) => (parts.find(p=>p.type===type)||{}).value || '';
+                    const ts = get('year') + get('month') + get('day') + get('hour') + get('minute') + get('second');
+                    const filenameAtPress = 'list_' + ts + '.csv';
+
+                    const res = await runGas('createRosterCsv', token, { selectedFields: arr, filter: filter, filename: filenameAtPress });
+                    if (res && res.success) {
+                        const fname = filenameAtPress || res.filename || 'list.csv';
+                        if (res.encoding === 'shift_jis' && res.csvBase64) {
+                            // base64 をデコードしてバイナリとしてダウンロード
+                            const b64 = res.csvBase64;
+                            const bin = atob(b64);
+                            const len = bin.length;
+                            const u8 = new Uint8Array(len);
+                            for (let i = 0; i < len; i++) u8[i] = bin.charCodeAt(i);
+                            const blob = new Blob([u8], { type: 'text/csv;charset=Shift_JIS' });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a'); a.href = url; a.download = fname; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+                        } else {
+                            const csv = res.csv || '';
+                            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a'); a.href = url; a.download = fname; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+                        }
+                        setModalOpen(false);
+                    } else {
+                        alert(res.message || '作成に失敗しました');
+                    }
+                } catch (e) { alert(e.message || e); }
+                finally { setBusy(false); }
+            };
+
+            return (
+                <div className="flex flex-col h-full p-4 md:p-6 bg-gray-50">
+                    <div className="max-w-4xl mx-auto bg-white rounded-lg shadow-sm p-6 h-full overflow-y-auto">
+                        <h3 className="text-lg font-bold mb-3">名簿出力</h3>
+                        <p className="text-sm text-gray-600 mb-4">出力したい項目を選択し、出力対象を設定して「出力」を押してください。管理者のみ車所有とAdminが選択できます。</p>
+
+                        <div className="mb-4">
+                            <h4 className="font-medium mb-2">出力項目</h4>
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                                <label className={`flex items-center p-2 border rounded ${availableKeys.length===0 ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-white'}`} onClick={availableKeys.length===0 ? undefined : toggleSelectAll} title={availableKeys.length===0 ? '選択可能な項目がありません' : 'すべて選択'}>
+                                    <input type="checkbox" checked={selectAll} disabled={availableKeys.length===0} readOnly className="mr-3 w-4 h-4" />
+                                    <span className="text-sm font-medium">すべて選択</span>
+                                </label>
+                                {fields.map(f => (
+                                    <label key={f.key} className={`flex items-center p-2 border rounded ${f.adminOnly && !isAdmin ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-white'}`} onClick={f.adminOnly && !isAdmin ? undefined : () => toggleField(f.key, f.adminOnly)} title={f.adminOnly && !isAdmin ? '管理者のみ選択可能' : ''} aria-disabled={f.adminOnly && !isAdmin}>
+                                        <input type="checkbox" checked={selected.has(f.key)} disabled={f.adminOnly && !isAdmin} readOnly className="mr-3 w-4 h-4" />
+                                        <span className="text-sm">{f.label}</span>
+                                    </label>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="mb-4">
+                            <h4 className="font-medium mb-2">出力対象</h4>
+                            <div className="flex items-center space-x-4 mb-3">
+                                <label className="flex items-center"><input type="radio" name="targetType" checked={targetType==='all'} onChange={()=>setTargetType('all')} className="mr-2" /> 全員</label>
+                                <label className="flex items-center"><input type="radio" name="targetType" checked={targetType==='orgs'} onChange={()=>setTargetType('orgs')} className="mr-2" /> 局ごと</label>
+                            </div>
+
+                            {targetType === 'orgs' && (
+                                <div>
+                                    <div className="mb-2 text-sm">局ごとのマッチ方法：</div>
+                                    <label className="mr-4"><input type="radio" name="orgMode" checked={orgMatchMode==='mainOnly'} onChange={()=>setOrgMatchMode('mainOnly')} className="mr-2" /> 主所属局、部門のみ</label>
+                                    <label><input type="radio" name="orgMode" checked={orgMatchMode==='allAffiliations'} onChange={()=>setOrgMatchMode('allAffiliations')} className="mr-2" /> 所属する全員</label>
+
+                                    <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        {orgList.map(o => (
+                                            <div key={o.name} className="border rounded p-3">
+                                                <label className="flex items-center mb-2">
+                                                    <input type="checkbox" className="mr-2" checked={!!orgChecked[o.name]} onChange={()=>toggleOrg(o.name)} />
+                                                    <span className="font-medium">{o.name}</span>
+                                                </label>
+                                                <div className="pl-6">
+                                                    {(o.depts||[]).length===0 ? <div className="text-sm text-gray-500">部門情報なし</div> : o.depts.map(d => (
+                                                        <label key={d} className="flex items-center text-sm"><input type="checkbox" className="mr-2" checked={deptChecked[o.name] ? !!deptChecked[o.name][d] : false} onChange={()=>toggleDept(o.name, d)} />{d}</label>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="text-right">
+                            <button onClick={openExportModal} disabled={busy} className={`bg-indigo-600 text-white px-6 py-3 rounded-lg font-bold shadow hover:bg-indigo-700 ${busy?'opacity-60':'opacity-100'}`}>
+                                出力
+                            </button>
+                        </div>
+                    </div>
+
+                    {modalOpen && (
+                        <div className="fixed inset-0 flex items-center justify-center modal-overlay p-4 z-[200]">
+                            <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg p-6 flex flex-col animate-fade-in">
+                                <h4 className="font-bold mb-3">ファイル名</h4>
+                                <div className="mb-4">
+                                    <label className="text-xs text-gray-600">ダウンロードファイル名（変更可）</label>
+                                    <input className="w-full border p-2 rounded mt-1" value={filename} onChange={e=>setFilename(e.target.value)} />
+                                </div>
+                                <div className="flex justify-end space-x-3">
+                                    <button onClick={()=>setModalOpen(false)} className="px-4 py-2 rounded bg-gray-100">キャンセル</button>
+                                    <button onClick={doExport} disabled={busy} className="px-4 py-2 rounded bg-indigo-600 text-white">ダウンロード</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
                 </div>
             );
         }
@@ -296,7 +556,15 @@
             const [options, setOptions] = useState(null);
             const [loading, setLoading] = useState(true);
             const [saving, setSaving] = useState(false);
+            const [saveDialog, setSaveDialog] = useState({ isOpen: false, type: '', message: '', onOk: null, onCancel: null });
             const [msg, setMsg] = useState({ type: '', text: '' });
+            const [userEditOpen, setUserEditOpen] = useState(false);
+            const [creating, setCreating] = useState(false);
+            const [editingTarget, setEditingTarget] = useState(null);
+
+            const formRef = useRef(null);
+            const nameRef = useRef(null);
+            const saveBtnRef = useRef(null);
 
             useEffect(() => {
                 Promise.all([
@@ -309,6 +577,81 @@
                 .finally(() => setLoading(false));
             }, []);
 
+            const handleFormKeyDown = (e) => {
+                if (e.key !== 'Enter') return;
+                const root = formRef.current;
+                if (!root) return;
+                const tag = e.target && e.target.tagName && e.target.tagName.toLowerCase();
+                if (!['input','select','textarea'].includes(tag)) return;
+                e.preventDefault();
+                const focusables = Array.from(root.querySelectorAll('input:not([disabled]), select:not([disabled]), textarea:not([disabled])'))
+                    .filter(el => el.type !== 'hidden');
+                const idx = focusables.indexOf(e.target);
+                if (idx === -1) return;
+                const next = focusables[idx + 1];
+                if (next) next.focus();
+            };
+
+            const handleNameEnBlur = (e) => {
+                if (!profile) return;
+                let val = (e.target.value || '').toString();
+                // 全角スペースを半角に
+                val = val.replace(/\u3000/g, ' ').replace(/\s+/g, ' ').trim();
+                // update normalized name
+                setProfile(prev => ({ ...prev, nameEn: val }));
+
+                // only auto-create when in creating mode
+                if (!creating) return;
+                // do not overwrite existing email
+                if (profile.email) return;
+                if (!val) return;
+
+                const parts = val.split(' ');
+                // expect at least surname and given name: "姓 名"
+                if (parts.length < 2) return;
+                const surname = parts[0];
+                const given = parts[1];
+                const alpha = /^[A-Za-z-']+$/;
+                if (!alpha.test(surname) || !alpha.test(given)) return;
+
+                const yy = String(new Date().getFullYear()).slice(-2);
+                const initial = given[0].toLowerCase();
+                const cleanSurname = surname.toLowerCase().replace(/[^a-z]/g, '');
+                const email = `${yy}.${initial}.${cleanSurname}.nutfes@gmail.com`;
+                setProfile(prev => ({ ...prev, email }));
+            };
+
+            const parseBirthday = (b) => {
+                if (!b) return { y: '', m: '', d: '' };
+                const parts = String(b).split('-');
+                return { y: parts[0] || '', m: parts[1] || '', d: parts[2] || '' };
+            };
+
+            const handleBirthdayPartChange = (part, value) => {
+                const { y, m, d } = parseBirthday(profile.birthday || '');
+                const ny = part === 'y' ? value.replace(/\D/g,'').slice(0,4) : y;
+                const nm = part === 'm' ? value.replace(/\D/g,'').slice(0,2) : m;
+                const nd = part === 'd' ? value.replace(/\D/g,'').slice(0,2) : d;
+                // Compose without automatic left-zero padding so partial inputs remain as-typed
+                const parts = [];
+                if (ny) parts.push(ny);
+                if (nm) parts.push(nm);
+                if (nd) parts.push(nd);
+                const composed = parts.join('-');
+                setProfile(prev => ({ ...prev, birthday: composed }));
+            };
+
+            const handleStudentIdInput = (e) => {
+                const v = (e.target.value || '').replace(/\D/g, '').slice(0,8);
+                setProfile(prev => ({ ...prev, studentId: v }));
+            };
+
+            const validatePhoneNumber = (phone) => {
+                if (!phone) return true; // allow empty
+                const digits = (phone || '').replace(/\D/g, '');
+                return digits.length >= 10 && digits.length <= 11;
+            };
+
             const handleChange = (key, val) => setProfile(prev => ({ ...prev, [key]: val }));
 
             const handleOrgChange = (idx, key, val) => {
@@ -317,14 +660,90 @@
                 setProfile(prev => ({ ...prev, orgs: newOrgs }));
             };
 
+            const EMPTY_NEW_PROFILE = () => ({
+                name: '', nameEn: '', email: '', studentId: '', grade: '', field: '', phone: '', birthday: '', almaMater: '', carOwner: false, isAdmin: false,
+                orgs: [{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''}],
+                canEditNameEmail: true
+            });
+
             const handleSave = async () => {
                 setSaving(true); setMsg({ type: '', text: '' });
+                // show loading modal
+                setSaveDialog({ isOpen: true, type: 'loading', message: creating ? '作成中...' : '保存中...', onOk: null, onCancel: null });
                 try {
-                    await runGas('updateUserProfile', localStorage.getItem('slack_app_session'), profile);
-                    setMsg({ type: 'success', text: '保存しました' });
+                    const token = localStorage.getItem('slack_app_session');
+                    if (creating) {
+                        // create new user
+                        const payload = { ...profile };
+                        payload.orgs = payload.orgs.filter(o => o.org || o.dept || o.role);
+                        await runGas('createUser', token, payload);
+                        // refresh options in case admin lists changed
+                        runGas('getSearchOptions').then(o=>setOptions(o)).catch(()=>{});
+                        // reset form for next new registration
+                        setProfile(EMPTY_NEW_PROFILE());
+                        setEditingTarget('__new__');
+                        setCreating(true);
+                        // close loading, show success modal and focus name for next entry
+                        setSaveDialog({ isOpen: false, type: '', message: '' });
+                        setSaveDialog({ isOpen: true, type: 'notify', message: '新規ユーザーを作成しました', onOk: () => { setSaveDialog({ isOpen: false }); if (nameRef.current) nameRef.current.focus(); }, onCancel: null });
+                    } else {
+                        // validations for edit/save
+                        const sid = (profile.studentId || '').replace(/\D/g, '');
+                        if (sid && sid.length !== 8) {
+                            setSaveDialog({ isOpen: true, type: 'notify', message: '学籍番号は8桁の数字で入力してください', onOk: () => setSaveDialog({ isOpen: false }), onCancel: null });
+                            setSaving(false); return;
+                        }
+                        if (!validatePhoneNumber(profile.phone)) {
+                            setSaveDialog({ isOpen: true, type: 'notify', message: '電話番号は数字10〜11桁で入力してください', onOk: () => setSaveDialog({ isOpen: false }), onCancel: null });
+                            setSaving(false); return;
+                        }
+                        // birthday validation
+                        if (profile.birthday) {
+                            const parts = (profile.birthday || '').split('-');
+                            if (parts.length === 3) {
+                                const y = parseInt(parts[0],10), m = parseInt(parts[1],10), d = parseInt(parts[2],10);
+                                const dt = new Date(y,m-1,d);
+                                if (dt.getFullYear() !== y || dt.getMonth() !== m-1 || dt.getDate() !== d) {
+                                    setSaveDialog({ isOpen: true, type: 'notify', message: '生年月日の形式が正しくありません', onOk: () => setSaveDialog({ isOpen: false }), onCancel: null });
+                                    setSaving(false); return;
+                                }
+                            }
+                        }
+
+                        await runGas('updateUserProfile', token, profile, editingTarget);
+                        // close loading, show success modal
+                        setSaveDialog({ isOpen: false, type: '', message: '' });
+                        setSaveDialog({ isOpen: true, type: 'notify', message: '保存しました', onOk: () => setSaveDialog({ isOpen: false }), onCancel: null });
+                    }
                 } catch(e) {
-                    setMsg({ type: 'error', text: '保存失敗: ' + e.message });
+                    setSaveDialog({ isOpen: false, type: '', message: '' });
+                    setSaveDialog({ isOpen: true, type: 'notify', message: (creating ? '作成失敗: ' : '保存失敗: ') + e.message, onOk: () => setSaveDialog({ isOpen: false }), onCancel: null });
                 } finally { setSaving(false); }
+            };
+
+            const openUserEdit = () => setUserEditOpen(true);
+            const loadUserForEdit = async (selectedEmail) => {
+                try {
+                    // モーダルを閉じてタブで読み込み表示を行う
+                    setUserEditOpen(false);
+                    setLoading(true);
+                    const token = localStorage.getItem('slack_app_session');
+                    const p = await runGas('getUserProfile', token, selectedEmail);
+                    setProfile(p);
+                    setEditingTarget(selectedEmail);
+                } catch(e) { setMsg({ type: 'error', text: '読み込み失敗: ' + e.message }); }
+                finally { setLoading(false); }
+            };
+
+            const restoreSelf = async () => {
+                try {
+                    setLoading(true);
+                    const token = localStorage.getItem('slack_app_session');
+                    const p = await runGas('getUserProfile', token);
+                    setProfile(p);
+                    setEditingTarget(null);
+                } catch(e) { setMsg({ type: 'error', text: '読み込み失敗: ' + e.message }); }
+                finally { setLoading(false); }
             };
 
             if (loading) return <div className="flex justify-center items-center h-full text-gray-500"><i className="fas fa-spinner fa-spin mr-2"></i>読み込み中...</div>;
@@ -332,8 +751,19 @@
 
             return (
                 <div className="h-full overflow-y-auto p-4 md:p-6 bg-gray-50">
-                    <div className="max-w-3xl mx-auto bg-white rounded-lg shadow-sm p-6">
-                        <h2 className="text-xl font-bold mb-6 text-gray-800 border-b pb-2"><i className="fas fa-user-edit mr-2"></i>プロフィール編集</h2>
+                    <div ref={formRef} onKeyDown={handleFormKeyDown} className="max-w-3xl mx-auto bg-white rounded-lg shadow-sm p-6">
+                        <div className="flex items-center justify-between mb-6 border-b pb-2">
+                            <h2 className="text-xl font-bold text-gray-800"><i className="fas fa-user-edit mr-2"></i>プロフィール編集</h2>
+                            <div className="flex items-center space-x-2">
+                                {profile && profile.canEditNameEmail && (
+                                    <>
+                                        {editingTarget && <button onClick={restoreSelf} className="text-xs text-gray-600 bg-gray-100 px-3 py-1 rounded">自分に戻す</button>}
+                                        <button onClick={()=>{ setCreating(true); setEditingTarget('__new__'); setProfile(EMPTY_NEW_PROFILE()); }} className="text-xs bg-green-100 text-green-900 px-3 py-1 rounded hover:brightness-95">新規登録</button>
+                                        <button onClick={openUserEdit} className="text-xs bg-yellow-100 text-yellow-900 px-3 py-1 rounded hover:brightness-95">ユーザー編集</button>
+                                    </>
+                                )}
+                            </div>
+                        </div>
 
                         {msg.text && (
                             <div className={`mb-4 p-3 rounded text-sm ${msg.type==='success'?'bg-green-50 text-green-700':'bg-red-50 text-red-700'}`}>
@@ -343,21 +773,26 @@
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
                             <div>
-                                <label className="block text-xs font-bold text-gray-500 mb-1">氏名 (変更不可)</label>
-                                <input type="text" value={profile.name} disabled className="w-full bg-gray-100 border p-2 rounded text-sm text-gray-500" />
+                                <label className="block text-xs font-bold text-gray-500 mb-1">氏名</label>
+                                <input ref={nameRef} type="text" value={profile.name} onChange={e=>handleChange('name', e.target.value)} disabled={!profile.canEditNameEmail} placeholder="山田 太郎" className={`w-full border p-2 rounded text-sm ${profile.canEditNameEmail? 'focus:ring-2 focus:ring-blue-400' : 'bg-gray-100 text-gray-500'}`} />
                             </div>
                             <div>
-                                <label className="block text-xs font-bold text-gray-500 mb-1">メールアドレス (変更不可)</label>
-                                <input type="text" value={profile.email} disabled className="w-full bg-gray-100 border p-2 rounded text-sm text-gray-500" />
+                                <label className="block text-xs font-bold text-gray-700 mb-1">英語の氏名（姓 半角スペース 名）</label>
+                                <input type="text" value={profile.nameEn} onChange={e=>handleChange('nameEn', e.target.value)} onBlur={handleNameEnBlur} placeholder="Yamada Taro" className="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-400" />
                             </div>
 
                             <div>
-                                <label className="block text-xs font-bold text-gray-700 mb-1">学籍番号</label>
-                                <input type="text" value={profile.studentId} onChange={e=>handleChange('studentId', e.target.value)} className="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-400" />
+                                <label className="block text-xs font-bold text-gray-500 mb-1">メールアドレス</label>
+                                <input type="text" value={profile.email} onChange={e=>handleChange('email', e.target.value)} disabled={!profile.canEditNameEmail} placeholder="example@ex.com" className={`w-full border p-2 rounded text-sm ${profile.canEditNameEmail? 'focus:ring-2 focus:ring-blue-400' : 'bg-gray-100 text-gray-500'}`} />
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-bold text-gray-500 mb-1">学籍番号</label>
+                                <input inputMode="numeric" pattern="\\d{8}" maxLength={8} value={profile.studentId} onInput={handleStudentIdInput} placeholder="12345678" className="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-400" />
                             </div>
                             <div>
                                 <label className="block text-xs font-bold text-gray-700 mb-1">電話番号</label>
-                                <input type="tel" value={profile.phone} onChange={e=>handleChange('phone', e.target.value)} className="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-400" />
+                                <input type="tel" value={profile.phone} onChange={e=>handleChange('phone', e.target.value)} placeholder="09012345678" className="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-400" />
                             </div>
 
                             <div className="grid grid-cols-2 gap-2">
@@ -378,12 +813,57 @@
                             </div>
 
                             <div>
-                                <label className="block text-xs font-bold text-gray-700 mb-1">生年月日 (YYYY/MM/DD)</label>
-                                <input type="text" value={profile.birthday} onChange={e=>handleChange('birthday', e.target.value)} className="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-400" placeholder="2000/01/01" />
+                                <label className="block text-xs font-bold text-gray-700 mb-1">生年月日</label>
+                                <div className="flex space-x-2">
+                                    <input inputMode="numeric" maxLength={4} placeholder="YYYY" value={parseBirthday(profile.birthday).y} onChange={e=>handleBirthdayPartChange('y', e.target.value)} className="w-1/3 border p-2 rounded text-sm focus:ring-2 focus:ring-blue-400" />
+                                    <input inputMode="numeric" maxLength={2} placeholder="MM" value={parseBirthday(profile.birthday).m} onChange={e=>handleBirthdayPartChange('m', e.target.value)} className="w-1/4 border p-2 rounded text-sm focus:ring-2 focus:ring-blue-400" />
+                                    <input inputMode="numeric" maxLength={2} placeholder="DD" value={parseBirthday(profile.birthday).d} onChange={e=>handleBirthdayPartChange('d', e.target.value)} className="w-1/4 border p-2 rounded text-sm focus:ring-2 focus:ring-blue-400" />
+                                </div>
                             </div>
                              <div>
                                 <label className="block text-xs font-bold text-gray-700 mb-1">出身校</label>
-                                <input type="text" value={profile.almaMater} onChange={e=>handleChange('almaMater', e.target.value)} className="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-400" />
+                                <input type="text" value={profile.almaMater} onChange={e=>handleChange('almaMater', e.target.value)} placeholder="○○工業高等専門学校△△キャンパス" className="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-400" />
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-bold text-gray-700 mb-1">車所有</label>
+                                <div className="flex items-center space-x-3 mt-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => handleChange('carOwner', !profile.carOwner)}
+                                        className={`relative inline-flex h-8 w-14 items-center rounded-full transition-colors ${
+                                            profile.carOwner ? 'bg-green-600' : 'bg-gray-300'
+                                        }`}
+                                    >
+                                        <span
+                                            className={`inline-block h-6 w-6 transform rounded-full bg-white transition-transform ${
+                                                profile.carOwner ? 'translate-x-7' : 'translate-x-1'
+                                            }`}
+                                        />
+                                    </button>
+                                    <span className="text-sm text-gray-700 font-medium">{profile.carOwner ? '所有' : 'なし'}</span>
+                                </div>
+                                {profile && profile.canEditNameEmail && (
+                                    <div className="mt-3">
+                                        <label className="block text-xs font-bold text-gray-700 mb-1">管理者権限</label>
+                                        <div className="flex items-center space-x-3 mt-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => handleChange('isAdmin', !profile.isAdmin)}
+                                                className={`relative inline-flex h-8 w-14 items-center rounded-full transition-colors ${
+                                                    profile.isAdmin ? 'bg-green-600' : 'bg-gray-300'
+                                                }`}
+                                            >
+                                                <span
+                                                    className={`inline-block h-6 w-6 transform rounded-full bg-white transition-transform ${
+                                                        profile.isAdmin ? 'translate-x-7' : 'translate-x-1'
+                                                    }`}
+                                                />
+                                            </button>
+                                            <span className="text-sm text-gray-700 font-medium">{profile.isAdmin ? '管理者' : 'なし'}</span>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         </div>
 
@@ -392,8 +872,8 @@
                             {profile.orgs.map((orgData, idx) => (
                                 <div key={idx} className="flex flex-col md:flex-row gap-2 p-3 bg-gray-50 rounded border">
                                     <div className="flex-1">
-                                        <label className="text-[10px] text-gray-500">所属局</label>
-                                        <select value={orgData.org} onChange={e=>handleOrgChange(idx, 'org', e.target.value)} className="w-full border p-1 rounded text-sm bg-white">
+                                        <label className="text-[10px] text-gray-500">{idx === 0 ? (profile && profile.canEditNameEmail ? '所属局' : '所属局 (変更不可)') : '所属局'}</label>
+                                        <select value={orgData.org} onChange={e=>handleOrgChange(idx, 'org', e.target.value)} disabled={idx === 0 && !(profile && profile.canEditNameEmail)} className={`w-full border p-1 rounded text-sm ${(idx === 0 && !(profile && profile.canEditNameEmail)) ? 'bg-gray-100 text-gray-500' : 'bg-white'}`}>
                                             <option value="">なし</option>
                                             {options.orgs.map(o=><option key={o} value={o}>{o}</option>)}
                                         </select>
@@ -417,10 +897,18 @@
                         </div>
 
                         <div className="text-right">
-                            <button onClick={handleSave} disabled={saving} className="bg-blue-600 text-white px-8 py-3 rounded-lg font-bold shadow-lg hover:bg-blue-700 transition active:scale-95 disabled:bg-gray-400">
+                            <button ref={saveBtnRef} data-save-button onClick={handleSave} disabled={saving} className="bg-blue-600 text-white px-8 py-3 rounded-lg font-bold shadow-lg hover:bg-blue-700 transition active:scale-95 disabled:bg-gray-400">
                                 {saving ? <i className="fas fa-spinner fa-spin"></i> : '保存する'}
                             </button>
                         </div>
+                        {userEditOpen && (
+                            <SearchModal currentUserEmail={profile.email} singleSelect={true} confirmLabel={"選択"} onClose={()=>setUserEditOpen(false)} onAdd={(ls)=>{
+                                if (ls && ls.length > 0) loadUserForEdit(ls[0].email);
+                                else setUserEditOpen(false);
+                            }} />
+                        )}
+                        {/* 新規登録はマイページ内の作成モードで実装するためモーダルは削除しました */}
+                        <DialogModal isOpen={saveDialog.isOpen} type={saveDialog.type === 'notify' ? 'notify' : saveDialog.type} message={saveDialog.message} onOk={saveDialog.onOk} onCancel={saveDialog.onCancel} />
                     </div>
                 </div>
             );
@@ -468,7 +956,7 @@
             );
         }
 
-        function DmTab({ currentUserEmail }) {
+        function DmTab({ user, authUrl }) {
             const [message, setMessage] = useState('');
             const [recipients, setRecipients] = useState([]);
             const [modalOpen, setModalOpen] = useState(false);
@@ -477,6 +965,26 @@
             const [result, setResult] = useState(null);
             const [dialog, setDialog] = useState({ isOpen: false, type: 'alert', message: '', onOk: null, onCancel: null });
             const txtRef = useRef(null);
+            const [loginUrl, setLoginUrl] = useState(authUrl || '');
+
+            useEffect(() => {
+                if (!loginUrl) runGas('getAuthUrl').then(url => setLoginUrl(url)).catch(()=>{});
+            }, []);
+
+            if (user && !user.hasToken) {
+                return (
+                    <div className="flex flex-col items-center justify-center h-full p-6 text-center">
+                        <div className="max-w-md w-full bg-white rounded-lg shadow p-6">
+                            <h3 className="text-lg font-bold mb-2">Slackアカウントが連携されていません</h3>
+                            <p className="text-sm text-gray-600 mb-4">Slackアカウントが連携されていないため、この機能は使用できません。</p>
+                            <button onClick={() => { if (loginUrl) window.top.location.href = loginUrl; }} className="w-full bg-[#4A154B] text-white font-bold py-3 rounded-lg shadow hover:bg-[#381039] transition flex items-center justify-center text-sm">
+                                <i className="fab fa-slack text-lg mr-2"></i> Slackアカウントでログイン
+                            </button>
+                        </div>
+                    </div>
+                );
+            }
+
 
             const insertMention = () => {
                 const t = txtRef.current;
@@ -540,7 +1048,7 @@
                             {sending ? `送信中 (${progress}%)` : <span><i className="far fa-paper-plane mr-2"></i>DMを一斉送信</span>}
                         </button>
                     </div>
-                    {modalOpen && <SearchModal currentUserEmail={currentUserEmail} onClose={()=>setModalOpen(false)} onAdd={(ls)=>{
+                    {modalOpen && <SearchModal currentUserEmail={user.email} onClose={()=>setModalOpen(false)} onAdd={(ls)=>{
                         const ids = new Set(recipients.map(r=>r.email));
                         setRecipients([...recipients, ...ls.filter(r=>!ids.has(r.email))]);
                         setModalOpen(false);
@@ -551,26 +1059,53 @@
             );
         }
 
-        function ChannelTab({ currentUserEmail }) {
+        function ChannelTab({ user, authUrl }) {
             const [channels, setChannels] = useState([]);
             const [selectedChannel, setSelectedChannel] = useState('');
             const [recipients, setRecipients] = useState([]);
-            const [loadingChannels, setLoadingChannels] = useState(false);
+            const [loadingChannels, setLoadingChannels] = useState(true);
+            const [needsAuth, setNeedsAuth] = useState(false);
             const [modalOpen, setModalOpen] = useState(false);
             const [sending, setSending] = useState(false);
             const [progress, setProgress] = useState(0);
             const [result, setResult] = useState(null);
             const [dialog, setDialog] = useState({ isOpen: false, type: 'alert', message: '', onOk: null, onCancel: null });
+            const [loginUrl, setLoginUrl] = useState(authUrl || '');
+
+            useEffect(() => {
+                if (!loginUrl) runGas('getAuthUrl').then(url => setLoginUrl(url)).catch(()=>{});
+            }, []);
 
             const closeDialog = () => setDialog(prev => ({ ...prev, isOpen: false }));
 
             useEffect(() => {
+                let mounted = true;
                 setLoadingChannels(true);
+                setNeedsAuth(false);
+
+                // user が未セット (初期 null) の間は読み込みスピナーを継続する
+                if (user == null) {
+                    return () => { mounted = false; };
+                }
+
+                // Slack連携がない場合は読み込み表示ののち認証案内へ
+                if (!user.hasToken) {
+                    if (mounted) {
+                        setNeedsAuth(true);
+                        setChannels([]);
+                        setLoadingChannels(false);
+                    }
+                    return () => { mounted = false; };
+                }
+
+                // 連携済: チャンネル取得
                 runGas('getChannels', localStorage.getItem('slack_app_session'))
-                    .then(setChannels)
-                    .catch(e => setDialog({ isOpen: true, type: 'alert', message: "チャンネル取得エラー: " + e.message, onOk: closeDialog }))
-                    .finally(() => setLoadingChannels(false));
-            }, []);
+                    .then(list => { if (mounted) setChannels(list || []); })
+                    .catch(e => { if (mounted) setDialog({ isOpen: true, type: 'alert', message: "チャンネル取得エラー: " + e.message, onOk: closeDialog }); })
+                    .finally(() => { if (mounted) setLoadingChannels(false); });
+
+                return () => { mounted = false; };
+            }, [user]);
 
             const handleInviteClick = () => {
                 if(!selectedChannel) { setDialog({ isOpen: true, type: 'alert', message: "チャンネルを選択してください", onOk: closeDialog }); return; }
@@ -595,6 +1130,26 @@
                 finally { setSending(false); }
             };
 
+            // 初期は読み込み中を表示
+            if (loadingChannels) {
+                return <div className="flex justify-center items-center h-full text-gray-500"><i className="fas fa-spinner fa-spin mr-2"></i>読み込み中...</div>;
+            }
+
+            // 認証が必要な場合は案内を表示
+            if (needsAuth) {
+                return (
+                    <div className="flex flex-col items-center justify-center h-full p-6 text-center">
+                        <div className="max-w-md w-full bg-white rounded-lg shadow p-6">
+                            <h3 className="text-lg font-bold mb-2">Slackアカウントが連携されていません</h3>
+                            <p className="text-sm text-gray-600 mb-4">Slackアカウントが連携されていないため、この機能は使用できません。</p>
+                            <button onClick={() => { if (loginUrl) window.top.location.href = loginUrl; }} className="w-full bg-[#4A154B] text-white font-bold py-3 rounded-lg shadow hover:bg-[#381039] transition flex items-center justify-center text-sm">
+                                <i className="fab fa-slack text-lg mr-2"></i> Slackアカウントでログイン
+                            </button>
+                        </div>
+                    </div>
+                );
+            }
+
             return (
                 <div className="flex flex-col h-full p-3 md:p-6 space-y-3 md:space-y-4 overflow-y-auto">
                     <div className="space-y-2 shrink-0">
@@ -604,6 +1159,7 @@
                             {channels.map(c => <option key={c.id} value={c.id}>{c.is_private ? '🔒 ' : '# '}{c.name}</option>)}
                         </select>
                         <p className="text-xs text-gray-500">※ あなたが参加しているチャンネルのみ表示されます。</p>
+
                     </div>
                     <div className="flex-1 min-h-0">
                         <RecipientSelector labelText="招待するユーザー" recipients={recipients} setRecipients={setRecipients} onAddClick={()=>setModalOpen(true)} />
@@ -613,7 +1169,7 @@
                             {sending ? `処理中 (${progress}%)` : <span><i className="fas fa-user-plus mr-2"></i>チャンネルに追加</span>}
                         </button>
                     </div>
-                    {modalOpen && <SearchModal currentUserEmail={currentUserEmail} onClose={()=>setModalOpen(false)} onAdd={(ls)=>{
+                    {modalOpen && <SearchModal currentUserEmail={user.email} onClose={()=>setModalOpen(false)} onAdd={(ls)=>{
                         const ids = new Set(recipients.map(r=>r.email));
                         setRecipients([...recipients, ...ls.filter(r=>!ids.has(r.email))]);
                         setModalOpen(false);
@@ -624,7 +1180,7 @@
             );
         }
 
-        function SearchModal({ onClose, onAdd, currentUserEmail }) {
+        function SearchModal({ onClose, onAdd, currentUserEmail, singleSelect = false, confirmLabel = '追加' }) {
             const [criteria, setCriteria] = useState({ query: '', grade: '', field: '', org: '', dept: '', role: '' });
             const [options, setOptions] = useState({ grades:[], fields:[], orgs:[], roles:[], deptMaster:[] });
             const [availableDepts, setAvailableDepts] = useState([]);
@@ -664,6 +1220,12 @@
             };
 
             const toggle = (m) => {
+                if (singleSelect) {
+                    const s = new Set();
+                    if (!sel.has(m)) s.add(m);
+                    setSel(s);
+                    return;
+                }
                 const s = new Set(sel);
                 if(s.has(m)) s.delete(m); else s.add(m);
                 setSel(s);
@@ -730,12 +1292,14 @@
                         </div>
                         <div className="p-3 md:p-4 border-t flex space-x-2 bg-white shadow-[0_-2px_10px_rgba(0,0,0,0.05)] shrink-0 pb-safe">
                             <button onClick={onClose} className="flex-1 py-3 rounded-lg text-sm font-medium text-gray-600 transition-colors bg-gray-100 active:bg-gray-200">キャンセル</button>
-                            <button onClick={()=>onAdd(res.filter(r=>sel.has(r.email)))} className="flex-[2] bg-blue-600 text-white py-3 rounded-lg font-bold shadow-lg hover:bg-blue-700 text-sm transition-all active:scale-95 active:bg-blue-800">追加 ({sel.size})</button>
+                            <button onClick={()=>onAdd(res.filter(r=>sel.has(r.email)))} className="flex-[2] bg-blue-600 text-white py-3 rounded-lg font-bold shadow-lg hover:bg-blue-700 text-sm transition-all active:scale-95 active:bg-blue-800">{confirmLabel} ({sel.size})</button>
                         </div>
                     </div>
                 </div>
             );
         }
+
+
 
         function ResultModal({ result, onClose }) {
             return (
