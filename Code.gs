@@ -23,7 +23,8 @@ const COL = {
   PHONE: 6,
   BIRTHDAY: 7,
   ALMA_MATER: 8,
-  ORG_START: 9
+  ORG_START: 9,
+  CAR_OWNER: 24
 };
 
 // Tokensシートの列定義 (新規)
@@ -40,7 +41,8 @@ const HEADER_USERS = [
   '所属局2', '所属部門2', '役職2',
   '所属局3', '所属部門3', '役職3',
   '所属局4', '所属部門4', '役職4',
-  '所属局5', '所属部門5', '役職5'
+  '所属局5', '所属部門5', '役職5',
+  '車所有'
 ];
 
 const HEADER_TOKENS = ['Session ID', 'Email', 'Slack Token', 'Created At'];
@@ -113,6 +115,10 @@ function setupSpreadsheet() {
     sheetUsers.getRange(startRow, baseCol + 1, numRows, 1).setDataValidation(ruleDept);
     sheetUsers.getRange(startRow, baseCol + 2, numRows, 1).setDataValidation(ruleRole);
   }
+
+  // 車所有 (Y列)
+  const ruleCarOwner = SpreadsheetApp.newDataValidation().requireValueInList(['TRUE', 'FALSE']).setAllowInvalid(true).build();
+  sheetUsers.getRange(startRow, 25, numRows, 1).setDataValidation(ruleCarOwner);
 
   // --- C. 条件付き書式 ---
   sheetUsers.clearConditionalFormatRules();
@@ -466,6 +472,7 @@ function getUserProfile(sessionToken) {
   // 編集可能なフィールドを返す (日付は文字列変換)
   return {
     name: row[COL.NAME_JP], // 編集不可
+    nameEn: row[COL.NAME_EN],
     email: row[COL.EMAIL],  // 編集不可
     studentId: row[COL.STUDENT_ID],
     grade: row[COL.GRADE],
@@ -473,6 +480,7 @@ function getUserProfile(sessionToken) {
     phone: row[COL.PHONE],
     birthday: row[COL.BIRTHDAY] instanceof Date ? Utilities.formatDate(row[COL.BIRTHDAY], Session.getScriptTimeZone(), 'yyyy/MM/dd') : row[COL.BIRTHDAY],
     almaMater: row[COL.ALMA_MATER],
+    carOwner: row[COL.CAR_OWNER] === 'TRUE' || row[COL.CAR_OWNER] === true,
     orgs: [
       { org: row[COL.ORG_START], dept: row[COL.ORG_START+1], role: row[COL.ORG_START+2] },
       { org: row[COL.ORG_START+3], dept: row[COL.ORG_START+4], role: row[COL.ORG_START+5] },
@@ -501,12 +509,14 @@ function updateUserProfile(sessionToken, formData) {
   if (rowIndex === -1) throw new Error("ユーザーが見つかりません");
 
   // 更新処理
+  sheet.getRange(rowIndex, COL.NAME_EN + 1).setValue(formData.nameEn);
   sheet.getRange(rowIndex, COL.STUDENT_ID + 1).setValue(formData.studentId);
   sheet.getRange(rowIndex, COL.GRADE + 1).setValue(formData.grade);
   sheet.getRange(rowIndex, COL.FIELD + 1).setValue(formData.field);
   sheet.getRange(rowIndex, COL.PHONE + 1).setValue(formData.phone);
   sheet.getRange(rowIndex, COL.BIRTHDAY + 1).setValue(formData.birthday);
   sheet.getRange(rowIndex, COL.ALMA_MATER + 1).setValue(formData.almaMater);
+  sheet.getRange(rowIndex, COL.CAR_OWNER + 1).setValue(formData.carOwner ? 'TRUE' : 'FALSE');
 
   // 所属情報 (5セット)
   if (formData.orgs && Array.isArray(formData.orgs)) {

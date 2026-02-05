@@ -337,6 +337,11 @@
                                 <input type="text" value={profile.name} disabled className="w-full bg-gray-100 border p-2 rounded text-sm text-gray-500" />
                             </div>
                             <div>
+                                <label className="block text-xs font-bold text-gray-700 mb-1">英語の名前</label>
+                                <input type="text" value={profile.nameEn} onChange={e=>handleChange('nameEn', e.target.value)} className="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-400" />
+                            </div>
+
+                            <div>
                                 <label className="block text-xs font-bold text-gray-500 mb-1">メールアドレス (変更不可)</label>
                                 <input type="text" value={profile.email} disabled className="w-full bg-gray-100 border p-2 rounded text-sm text-gray-500" />
                             </div>
@@ -374,6 +379,26 @@
                              <div>
                                 <label className="block text-xs font-bold text-gray-700 mb-1">出身校</label>
                                 <input type="text" value={profile.almaMater} onChange={e=>handleChange('almaMater', e.target.value)} className="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-400" />
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-bold text-gray-700 mb-1">車所有</label>
+                                <div className="flex items-center space-x-3 mt-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => handleChange('carOwner', !profile.carOwner)}
+                                        className={`relative inline-flex h-8 w-14 items-center rounded-full transition-colors ${
+                                            profile.carOwner ? 'bg-green-600' : 'bg-gray-300'
+                                        }`}
+                                    >
+                                        <span
+                                            className={`inline-block h-6 w-6 transform rounded-full bg-white transition-transform ${
+                                                profile.carOwner ? 'translate-x-7' : 'translate-x-1'
+                                            }`}
+                                        />
+                                    </button>
+                                    <span className="text-sm text-gray-700 font-medium">{profile.carOwner ? '所有' : 'なし'}</span>
+                                </div>
                             </div>
                         </div>
 
