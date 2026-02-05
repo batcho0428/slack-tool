@@ -4,7 +4,7 @@
 const APP_NAME = 'Slack-tool';
 const APP_HEADER_COLOR = '#1a237e'; // 紺色
 
-const SPREADSHEET_ID = getScriptProperty('SPREADSHEET_ID');
+// SPREADSHEET_IDは関数実行時に取得（定数化によるタイミング問題を回避）
 const SHEET_USERS = 'Users';
 const SHEET_LOGS = 'Logs';
 const SHEET_OPTIONS = 'Options';
@@ -23,9 +23,11 @@ const COL = {
   PHONE: 6,
   BIRTHDAY: 7,
   ALMA_MATER: 8,
-  ORG_START: 9,
-  CAR_OWNER: 24,
-  ADMIN: 25
+  RETIRED: 9,
+  CONTINUE_NEXT: 10,
+  ADMIN: 11,
+  CAR_OWNER: 12,
+  ORG_START: 13
 };
 
 // Tokensシートの列定義 (新規)
@@ -38,12 +40,12 @@ const COL_TOKENS = {
 
 const HEADER_USERS = [
   '氏名', 'Name', '学籍番号', '学年', '分野', 'メールアドレス', '電話番号', '生年月日', '出身校',
+  '退局', '次年度継続', 'Admin (12)', '車所有',
   '所属局1', '所属部門1', '役職1',
   '所属局2', '所属部門2', '役職2',
   '所属局3', '所属部門3', '役職3',
   '所属局4', '所属部門4', '役職4',
-  '所属局5', '所属部門5', '役職5',
-  '車所有', 'Admin'
+  '所属局5', '所属部門5', '役職5'
 ];
 
 const HEADER_TOKENS = ['Session ID', 'Email', 'Slack Token', 'Created At'];
@@ -54,11 +56,17 @@ function getScriptProperty(key) {
   return PropertiesService.getScriptProperties().getProperty(key);
 }
 
+function getSpreadsheetId() {
+  const id = getScriptProperty('SPREADSHEET_ID');
+  if (!id) throw new Error('SPREADSHEET_IDがScript Propertiesに設定されていません');
+  return id;
+}
+
 /* --------------------------------------------------------------------------
  * 0. 初期セットアップ (マイグレーション & トリガー設定)
  * -------------------------------------------------------------------------- */
 function setupSpreadsheet() {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = SpreadsheetApp.openById(getSpreadsheetId());
 
   // 1. Optionsシート
   let sheetOptions = ss.getSheetByName(SHEET_OPTIONS);
@@ -111,24 +119,28 @@ function setupSpreadsheet() {
   sheetUsers.getRange(startRow, 5, numRows, 1).setDataValidation(ruleField);
 
   for (let k = 0; k < 5; k++) {
-    const baseCol = 10 + (k * 3);
+    const baseCol = COL.ORG_START + 1 + (k * 3); // 1-based
     sheetUsers.getRange(startRow, baseCol, numRows, 1).setDataValidation(ruleOrg);
     sheetUsers.getRange(startRow, baseCol + 1, numRows, 1).setDataValidation(ruleDept);
     sheetUsers.getRange(startRow, baseCol + 2, numRows, 1).setDataValidation(ruleRole);
   }
 
   // 車所有 (Y列) と Admin列をチェックボックスに変更（フォールバックあり）
-  try {
-    sheetUsers.getRange(startRow, COL.CAR_OWNER + 1, numRows, 1).insertCheckboxes();
-  } catch (e) {
-    const ruleCarOwner = SpreadsheetApp.newDataValidation().requireValueInList(['TRUE', 'FALSE']).setAllowInvalid(true).build();
-    sheetUsers.getRange(startRow, COL.CAR_OWNER + 1, numRows, 1).setDataValidation(ruleCarOwner);
-  }
-  try {
-    sheetUsers.getRange(startRow, COL.ADMIN + 1, numRows, 1).insertCheckboxes();
-  } catch (e) {
-    // ignore
-  }
+  // Ensure boolean flags are checkboxes: 在籍, 次年度継続, 車所有, Admin
+  const boolColsToCheckbox = [COL.RETIRED, COL.CONTINUE_NEXT, COL.CAR_OWNER, COL.ADMIN];
+  boolColsToCheckbox.forEach(colIdx => {
+    try {
+      sheetUsers.getRange(startRow, colIdx + 1, numRows, 1).insertCheckboxes();
+    } catch (e) {
+      // fallback: set data validation to TRUE/FALSE list
+      try {
+        const rule = SpreadsheetApp.newDataValidation().requireValueInList(['TRUE', 'FALSE']).setAllowInvalid(true).build();
+        sheetUsers.getRange(startRow, colIdx + 1, numRows, 1).setDataValidation(rule);
+      } catch (ee) {
+        // ignore
+      }
+    }
+  });
 
   // --- C. 条件付き書式 ---
   sheetUsers.clearConditionalFormatRules();
@@ -149,12 +161,12 @@ function setupSpreadsheet() {
   rules.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(formulaStudentId).setBackground("#FFFF00").setRanges([rangeStudentId]).build());
 
   for (let k = 0; k < 5; k++) {
-    const colOrgIndex = 10 + (k * 3);
-    const colDeptIndex = 11 + (k * 3);
+    const colOrgIndex = COL.ORG_START + (k * 3) + 1; // 1-based: 所属局のカラムインデックス
+    const colDeptIndex = COL.ORG_START + (k * 3) + 2; // 1-based: 所属部門のカラムインデックス
     const colOrgLet = getColLetter(colOrgIndex);
     const colDeptLet = getColLetter(colDeptIndex);
     const range = sheetUsers.getRange(`${colDeptLet}2:${colDeptLet}`);
-    const formula = `=AND(${colDeptLet}2<>"", COUNTIFS(INDIRECT("${SHEET_OPTIONS}!$E:$E"), ${colOrgLet}2, INDIRECT("${SHEET_OPTIONS}!$F:$F"), ${colDeptLet}2)=0)`;
+    const formula = `=AND(${colDeptLet}2<>"", COUNTIFS(INDIRECT("${SHEET_OPTIONS}!\\$E:\\$E"), ${colOrgLet}2, INDIRECT("${SHEET_OPTIONS}!\\$F:\\$F"), ${colDeptLet}2)=0)`;
     rules.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(formula).setBackground("#FFFF00").setRanges([range]).build());
   }
   sheetUsers.setConditionalFormatRules(rules);
@@ -164,13 +176,17 @@ function setupSpreadsheet() {
   try {
     const lastRowUsers = sheetUsers.getLastRow();
     if (lastRowUsers >= startRow) {
-      const carRange = sheetUsers.getRange(startRow, COL.CAR_OWNER + 1, lastRowUsers - startRow + 1, 1);
-      const carVals = carRange.getValues().map(r => [(r[0] === 'TRUE' || r[0] === true) ? true : false]);
-      carRange.setValues(carVals);
-
-      const adminRange = sheetUsers.getRange(startRow, COL.ADMIN + 1, lastRowUsers - startRow + 1, 1);
-      const adminVals = adminRange.getValues().map(r => [(r[0] === 'TRUE' || r[0] === true) ? true : false]);
-      adminRange.setValues(adminVals);
+      // convert 'TRUE'/'FALSE' strings to booleans for checkbox columns
+      const boolCols = [COL.CAR_OWNER, COL.ADMIN, COL.RETIRED, COL.CONTINUE_NEXT];
+      boolCols.forEach(colIdx => {
+        try {
+          const range = sheetUsers.getRange(startRow, colIdx + 1, lastRowUsers - startRow + 1, 1);
+          const vals = range.getValues().map(r => { const v = r[0]; if (v === true || v === 'TRUE') return [true]; if (v === false || v === 'FALSE') return [false]; return [false]; });
+          range.setValues(vals);
+        } catch (e) {
+          // ignore per-column failures
+        }
+      });
     }
   } catch (e) {
     console.warn('Checkbox migration failed:', e.toString());
@@ -179,7 +195,7 @@ function setupSpreadsheet() {
 }
 
 function installTriggers() {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = SpreadsheetApp.openById(getSpreadsheetId());
   const triggerFuncName = 'handleSpreadsheetEdit';
   const triggers = ScriptApp.getProjectTriggers();
   const exists = triggers.some(t => t.getHandlerFunction() === triggerFuncName);
@@ -207,7 +223,7 @@ function getLoginUser(sessionToken) {
   try {
     if (!sessionToken) return { status: 'guest' };
 
-    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const ss = SpreadsheetApp.openById(getSpreadsheetId());
     const tokensSheet = ss.getSheetByName(SHEET_TOKENS);
     const usersSheet = ss.getSheetByName(SHEET_USERS);
 
@@ -242,9 +258,17 @@ function getLoginUser(sessionToken) {
       }
     }
 
-    // 期限切れ行の削除 (後ろから削除しないとインデックスがずれるため注意だが、ここでは1件のみ想定)
+    // 期限切れ行の削除 (後ろから削除してインデックスずれを防止)
     if (rowsToDelete.length > 0) {
-      rowsToDelete.reverse().forEach(row => tokensSheet.deleteRow(row));
+      rowsToDelete.sort((a, b) => b - a); // 降順でソート
+      rowsToDelete.forEach(row => {
+        try {
+          tokensSheet.deleteRow(row);
+        } catch (e) {
+          // 行削除失敗時はログして続行
+          console.warn('Failed to delete row ' + row + ':', e.message);
+        }
+      });
       return { status: 'guest', message: 'セッション有効期限切れ' };
     }
 
@@ -272,7 +296,7 @@ function getLoginUser(sessionToken) {
 
 // 1-A. OTPリクエスト (BotからDM送信)
 function requestLoginOtp(email) {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = SpreadsheetApp.openById(getSpreadsheetId());
   const usersSheet = ss.getSheetByName(SHEET_USERS);
   const data = usersSheet.getDataRange().getValues();
   const targetEmail = String(email).trim().toLowerCase();
@@ -365,7 +389,7 @@ function verifyLoginOtp(email, code) {
   PropertiesService.getScriptProperties().deleteProperty(propKey);
 
   // セッション発行
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = SpreadsheetApp.openById(getSpreadsheetId());
   const tokensSheet = ss.getSheetByName(SHEET_TOKENS);
 
   const newSessionToken = Utilities.getUuid();
@@ -415,7 +439,7 @@ function handleSlackCallback(code) {
     if (!infoJson.ok) return HtmlService.createHtmlOutput(`ユーザー情報取得エラー: ${infoJson.error}`);
 
     const userEmail = infoJson.user.profile.email;
-    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const ss = SpreadsheetApp.openById(getSpreadsheetId());
 
     // ユーザー登録チェック
     const usersSheet = ss.getSheetByName(SHEET_USERS);
@@ -527,7 +551,7 @@ function handleSlackCallback(code) {
  * 3. 共通機能 (Token取得ロジック - Tokensシートから取得)
  * -------------------------------------------------------------------------- */
 function getUserToken(sessionToken) {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = SpreadsheetApp.openById(getSpreadsheetId());
   const tokensSheet = ss.getSheetByName(SHEET_TOKENS);
   const data = tokensSheet.getDataRange().getValues();
 
@@ -569,7 +593,7 @@ function getUserProfile(sessionToken, targetEmail) {
   const login = getLoginUser(sessionToken);
   if (login.status !== 'authorized') throw new Error("認証されていません");
 
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = SpreadsheetApp.openById(getSpreadsheetId());
   const sheet = ss.getSheetByName(SHEET_USERS);
   const data = sheet.getDataRange().getValues();
 
@@ -595,6 +619,8 @@ function getUserProfile(sessionToken, targetEmail) {
     birthday: birthdayVal,
     almaMater: row[COL.ALMA_MATER],
     carOwner: row[COL.CAR_OWNER] === 'TRUE' || row[COL.CAR_OWNER] === true,
+    retired: row[COL.RETIRED] === 'TRUE' || row[COL.RETIRED] === true,
+    continueNext: row[COL.CONTINUE_NEXT] === 'TRUE' || row[COL.CONTINUE_NEXT] === true,
     orgs: [
       { org: row[COL.ORG_START], dept: row[COL.ORG_START+1], role: row[COL.ORG_START+2] },
       { org: row[COL.ORG_START+3], dept: row[COL.ORG_START+4], role: row[COL.ORG_START+5] },
@@ -611,7 +637,7 @@ function updateUserProfile(sessionToken, formData, targetEmail) {
   const login = getLoginUser(sessionToken);
   if (login.status !== 'authorized') throw new Error("認証されていません");
 
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = SpreadsheetApp.openById(getSpreadsheetId());
   const sheet = ss.getSheetByName(SHEET_USERS);
   const data = sheet.getDataRange().getValues();
 
@@ -661,6 +687,9 @@ function updateUserProfile(sessionToken, formData, targetEmail) {
 
   sheet.getRange(rowIndex, COL.ALMA_MATER + 1).setValue(formData.almaMater || '');
   sheet.getRange(rowIndex, COL.CAR_OWNER + 1).setValue(formData.carOwner ? true : false);
+  // 在籍・次年度継続フラグ
+  if (typeof formData.retired !== 'undefined') sheet.getRange(rowIndex, COL.RETIRED + 1).setValue(formData.retired ? true : false);
+  if (typeof formData.continueNext !== 'undefined') sheet.getRange(rowIndex, COL.CONTINUE_NEXT + 1).setValue(formData.continueNext ? true : false);
 
   // 所属情報 (5セット)
   if (formData.orgs && Array.isArray(formData.orgs)) {
@@ -684,6 +713,18 @@ function updateUserProfile(sessionToken, formData, targetEmail) {
     if (typeof formData.isAdmin !== 'undefined') sheet.getRange(rowIndex, COL.ADMIN + 1).setValue(formData.isAdmin ? true : false);
   }
 
+  // 次年度継続スイッチの制御: 常にデータは保存するが、UIの操作は制限される可能性がある
+  if (typeof formData.continueNext !== 'undefined') {
+    const currentVal = sheet.getRange(rowIndex, COL.CONTINUE_NEXT + 1).getValue();
+    const currentBool = (currentVal === true || currentVal === 'TRUE');
+    const requested = !!formData.continueNext;
+    if (!isAdmin) {
+      // 非管理者は OFF -> ON のみ許可（ON->OFF は不可）
+      if (currentBool === true && requested === false) throw new Error('次年度継続を取り消す権限はありません');
+    }
+    sheet.getRange(rowIndex, COL.CONTINUE_NEXT + 1).setValue(requested ? true : false);
+  }
+
   return { success: true };
 }
 
@@ -699,7 +740,7 @@ function createUser(sessionToken, userObj) {
   const login = getLoginUser(sessionToken);
   if (login.status !== 'authorized') throw new Error('認証されていません');
 
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = SpreadsheetApp.openById(getSpreadsheetId());
   const usersSheet = ss.getSheetByName(SHEET_USERS);
   if (!usersSheet) throw new Error('Users シートが見つかりません');
 
@@ -737,6 +778,10 @@ function createUser(sessionToken, userObj) {
   }
   row[COL.ALMA_MATER] = userObj.almaMater || '';
 
+  // 退局 / 次年度継続 (退局 default: false => 在籍)
+  row[COL.RETIRED] = (typeof userObj.retired !== 'undefined') ? !!userObj.retired : false;
+  row[COL.CONTINUE_NEXT] = (typeof userObj.continueNext !== 'undefined') ? !!userObj.continueNext : false;
+
   // 所属 (5セット)
   if (userObj.orgs && Array.isArray(userObj.orgs)) {
     for (let k = 0; k < 5; k++) {
@@ -769,7 +814,7 @@ function createUser(sessionToken, userObj) {
 
 function sendDMs(sessionToken, message, recipients) {
   const { token, email: senderEmail } = getUserToken(sessionToken);
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = SpreadsheetApp.openById(getSpreadsheetId());
   const logSheet = ss.getSheetByName(SHEET_LOGS);
   let successCount = 0;
   const failedList = [];
@@ -844,7 +889,7 @@ function getChannels(sessionToken) {
 
 function inviteToChannel(sessionToken, channelId, recipients) {
   const { token, email: senderEmail } = getUserToken(sessionToken);
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = SpreadsheetApp.openById(getSpreadsheetId());
   const logSheet = ss.getSheetByName(SHEET_LOGS);
   let successCount = 0;
   const failedList = [];
@@ -879,7 +924,7 @@ function inviteToChannel(sessionToken, channelId, recipients) {
  * 6. 検索 & ユーティリティ
  * -------------------------------------------------------------------------- */
 function getSearchOptions() {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = SpreadsheetApp.openById(getSpreadsheetId());
   const optSheet = ss.getSheetByName(SHEET_OPTIONS);
   if (!optSheet) return { grades: [], fields: [], roles: [], orgs: [], deptMaster: [] };
   const data = optSheet.getDataRange().getValues();
@@ -895,7 +940,7 @@ function getSearchOptions() {
 }
 
 function searchRecipients(criteria) {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = SpreadsheetApp.openById(getSpreadsheetId());
   const sheet = ss.getSheetByName(SHEET_USERS);
   const data = sheet.getDataRange().getValues();
   const results = [];
@@ -905,6 +950,7 @@ function searchRecipients(criteria) {
   const filterOrg = criteria.org || "";
   const filterDept = criteria.dept || "";
   const filterRole = criteria.role || "";
+  const filterStatus = criteria.status || "active"; // 'active', 'retired', 'all'
 
   for (let i = 1; i < data.length; i++) {
     const row = data[i];
@@ -915,9 +961,16 @@ function searchRecipients(criteria) {
     const field = row[COL.FIELD];
     const email = row[COL.EMAIL];
     const almaMater = row[COL.ALMA_MATER] || "";
+    const retired = row[COL.RETIRED] === true || row[COL.RETIRED] === 'TRUE';
     const searchString = `${nameJp} ${nameEn} ${email} ${almaMater} ${studentId}`.toLowerCase();
 
     if (q && !searchString.includes(q)) continue;
+
+    // 在籍フィルタ処理
+    if (filterStatus === 'active' && retired) continue;
+    if (filterStatus === 'retired' && !retired) continue;
+    // filterStatus === 'all' の場合は全て表示
+
     if (filterGrade && grade !== filterGrade) continue;
     if (filterField && field !== filterField) continue;
 
@@ -959,9 +1012,10 @@ function handleSpreadsheetEdit(e) {
   const row = range.getRow();
   if (row < 2) return;
 
-  // 所属局列（10, 13, 16, 19, 22）の編集を検出
-  const startCol = 10;
-  if (col < startCol || col > 22) return;
+  // 所属局列を検出（1-based）
+  const startCol = COL.ORG_START + 1;
+  const lastCol = COL.ORG_START + (5 * 3); // 1-based last column for roles
+  if (col < startCol || col > lastCol) return;
   if ((col - startCol) % 3 !== 0) return;
 
   const orgName = e.value;
@@ -997,7 +1051,7 @@ function handleSpreadsheetEdit(e) {
  * Users シートのヘッダに 'Admin' を追加し、Z列の空セルを FALSE に設定します
  * -------------------------------------------------------------------------- */
 function initAdminColumnDefaults() {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = SpreadsheetApp.openById(getSpreadsheetId());
   const sheet = ss.getSheetByName(SHEET_USERS);
   if (!sheet) throw new Error('Users シートが見つかりません');
 
@@ -1006,47 +1060,48 @@ function initAdminColumnDefaults() {
   const headers = headerRange.getValues()[0];
 
   // ヘッダが短ければ拡張
-  if (headers.length < COL.ADMIN + 1) {
+  const lastRequiredCol = Math.max(COL.RETIRED, COL.CONTINUE_NEXT, COL.ADMIN, COL.CAR_OWNER) + 1; // 0-based -> +1
+  if (headers.length < lastRequiredCol) {
     const newHeaders = headers.slice();
-    for (let i = headers.length; i < COL.ADMIN; i++) newHeaders[i] = '';
+    for (let i = headers.length; i < lastRequiredCol; i++) newHeaders[i] = '';
+    // set known header names
+    newHeaders[COL.RETIRED] = '退局';
+    newHeaders[COL.CONTINUE_NEXT] = '次年度継続';
     newHeaders[COL.ADMIN] = 'Admin';
+    newHeaders[COL.CAR_OWNER] = '車所有';
     sheet.getRange(1, 1, 1, newHeaders.length).setValues([newHeaders]);
   } else {
-    // 既存ヘッダに Admin をセット（上書きでも安全）
-    sheet.getRange(1, COL.ADMIN + 1).setValue('Admin');
+    // ensure headers exist for these columns
+    sheet.getRange(1, COL.RETIRED + 1).setValue(headers[COL.RETIRED] || '退局');
+    sheet.getRange(1, COL.CONTINUE_NEXT + 1).setValue(headers[COL.CONTINUE_NEXT] || '次年度継続');
+    sheet.getRange(1, COL.ADMIN + 1).setValue(headers[COL.ADMIN] || 'Admin');
+    sheet.getRange(1, COL.CAR_OWNER + 1).setValue(headers[COL.CAR_OWNER] || '車所有');
   }
 
   // データ行の Admin 列が空の行は FALSE に設定
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return { success: true, message: 'ヘッダのみです' };
 
-  const colRange = sheet.getRange(2, COL.ADMIN + 1, lastRow - 1, 1);
-  const colVals = colRange.getValues();
+  // Ensure data rows have boolean values and checkbox formatting for boolean columns
+  const boolCols = [COL.RETIRED, COL.CONTINUE_NEXT, COL.ADMIN, COL.CAR_OWNER];
   let updated = 0;
-  for (let i = 0; i < colVals.length; i++) {
-    const v = colVals[i][0];
-    if (v === '' || v === null || typeof v === 'undefined') {
-      colVals[i][0] = false;
-      updated++;
-    } else if (v === 'TRUE') {
-      colVals[i][0] = true;
-    } else if (v === 'FALSE') {
-      colVals[i][0] = false;
+  boolCols.forEach(colIdx => {
+    try {
+      const colRange = sheet.getRange(2, colIdx + 1, lastRow - 1, 1);
+      const colVals = colRange.getValues();
+      for (let i = 0; i < colVals.length; i++) {
+        const v = colVals[i][0];
+        if (v === '' || v === null || typeof v === 'undefined') { colVals[i][0] = false; updated++; }
+        else if (v === 'TRUE') colVals[i][0] = true;
+        else if (v === 'FALSE') colVals[i][0] = false;
+      }
+      if (updated > 0) colRange.setValues(colVals);
+    } catch (e) {
+      // ignore per-column failures
     }
-  }
-  if (updated > 0) colRange.setValues(colVals);
-  // Admin列をチェックボックス化（データ行）
-  try {
-    sheet.getRange(2, COL.ADMIN + 1, lastRow - 1, 1).insertCheckboxes();
-  } catch (e) {
-    // ignore
-  }
-  // CAR_OWNER列もチェックボックス化（データ行）
-  try {
-    sheet.getRange(2, COL.CAR_OWNER + 1, lastRow - 1, 1).insertCheckboxes();
-  } catch (e) {
-    // ignore
-  }
+    // ensure checkbox formatting
+    try { sheet.getRange(2, colIdx + 1, lastRow - 1, 1).insertCheckboxes(); } catch (e) { /* ignore */ }
+  });
   return { success: true, updated: updated };
 }
 
@@ -1081,13 +1136,21 @@ function listExportFolders() {
   }
 }
 
+function isContinueSwitchEnabled() {
+  try {
+    return getScriptProperty('NEXT_YEAR_CONTINUE_ENABLED') === 'true';
+  } catch (e) {
+    return false;
+  }
+}
+
 function createRosterSpreadsheet(sessionToken, selectedFields, folderId, filename) {
   // sessionToken: to validate user and permissions
   try {
     const login = getLoginUser(sessionToken);
     if (login.status !== 'authorized') throw new Error('認証されていません');
 
-    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const ss = SpreadsheetApp.openById(getSpreadsheetId());
     const usersSheet = ss.getSheetByName(SHEET_USERS);
     if (!usersSheet) throw new Error('Users シートが見つかりません');
 
@@ -1117,12 +1180,30 @@ function createRosterSpreadsheet(sessionToken, selectedFields, folderId, filenam
     for (let f of selectedFields) {
       if (f === '氏名') pushIf('氏名', COL.NAME_JP);
       else if (f === 'Name') pushIf('Name', COL.NAME_EN);
+      else if (f === '学籍番号') pushIf('学籍番号', COL.STUDENT_ID);
       else if (f === '学年') pushIf('学年', COL.GRADE);
       else if (f === '分野') pushIf('分野', COL.FIELD);
       else if (f === 'メールアドレス') pushIf('メールアドレス', COL.EMAIL);
-      else if (f === '所属局1～5' || f === '所属局1') pushOrgSeq(COL.ORG_START, '所属局');
-      else if (f === '所属部門1～5' || f === '所属部門1') pushOrgSeq(COL.ORG_START + 1, '所属部門');
-      else if (f === '役職1～5' || f === '役職1') pushOrgSeq(COL.ORG_START + 2, '役職');
+      else if (f === '電話番号') pushIf('電話番号', COL.PHONE);
+      else if (f === '生年月日') pushIf('生年月日', COL.BIRTHDAY);
+      else if (f === '出身校') pushIf('出身校', COL.ALMA_MATER);
+      else if (f === '退局' || f === '在籍') pushIf('退局', COL.RETIRED);
+      else if (f === '次年度継続') pushIf('次年度継続', COL.CONTINUE_NEXT);
+      else if (f === '所属局1') pushIf('所属局1', COL.ORG_START + 0 * 3);
+      else if (f === '所属部門1') pushIf('所属部門1', COL.ORG_START + 0 * 3 + 1);
+      else if (f === '役職1') pushIf('役職1', COL.ORG_START + 0 * 3 + 2);
+      else if (f === '所属局2') pushIf('所属局2', COL.ORG_START + 1 * 3);
+      else if (f === '所属部門2') pushIf('所属部門2', COL.ORG_START + 1 * 3 + 1);
+      else if (f === '役職2') pushIf('役職2', COL.ORG_START + 1 * 3 + 2);
+      else if (f === '所属局3') pushIf('所属局3', COL.ORG_START + 2 * 3);
+      else if (f === '所属部門3') pushIf('所属部門3', COL.ORG_START + 2 * 3 + 1);
+      else if (f === '役職3') pushIf('役職3', COL.ORG_START + 2 * 3 + 2);
+      else if (f === '所属局4') pushIf('所属局4', COL.ORG_START + 3 * 3);
+      else if (f === '所属部門4') pushIf('所属部門4', COL.ORG_START + 3 * 3 + 1);
+      else if (f === '役職4') pushIf('役職4', COL.ORG_START + 3 * 3 + 2);
+      else if (f === '所属局5') pushIf('所属局5', COL.ORG_START + 4 * 3);
+      else if (f === '所属部門5') pushIf('所属部門5', COL.ORG_START + 4 * 3 + 1);
+      else if (f === '役職5') pushIf('役職5', COL.ORG_START + 4 * 3 + 2);
       else if (f === '車所有') pushIf('車所有', COL.CAR_OWNER);
       else if (f === 'Admin') pushIf('Admin', COL.ADMIN);
     }
@@ -1135,7 +1216,25 @@ function createRosterSpreadsheet(sessionToken, selectedFields, folderId, filenam
       const row = usersData[i];
       // skip empty rows (メールアドレスが空なら無視)
       if (!row[COL.EMAIL]) continue;
-      const outRow = indices.map(ci => row[ci] === undefined || row[ci] === null ? '' : row[ci]);
+      const outRow = indices.map(ci => {
+        let v = row[ci];
+        if (v === undefined || v === null) return '';
+        // Format birthday as YYYY/MM/DD for CSV (Windows Excel friendly)
+        if (ci === COL.BIRTHDAY) {
+          try {
+            if (Object.prototype.toString.call(v) === '[object Date]') {
+              return Utilities.formatDate(v, 'Asia/Tokyo', 'yyyy/MM/dd');
+            }
+            // if it's a string like 2004-04-28 or 2004/04/28
+            const s = String(v).trim();
+            if (s.indexOf('-') !== -1) return s.replace(/-/g, '/');
+            return s;
+          } catch (e) {
+            return String(v);
+          }
+        }
+        return v;
+      });
       outRows.push(outRow);
     }
 
@@ -1183,7 +1282,7 @@ function createRosterCsv(sessionToken, params) {
     const selectedFields = params.selectedFields || [];
     const filter = params.filter || { type: 'all' };
 
-    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const ss = SpreadsheetApp.openById(getSpreadsheetId());
     const usersSheet = ss.getSheetByName(SHEET_USERS);
     if (!usersSheet) throw new Error('Users シートが見つかりません');
 
@@ -1216,16 +1315,24 @@ function createRosterCsv(sessionToken, params) {
       else if (f === '電話番号') add(COL.PHONE);
       else if (f === '生年月日') add(COL.BIRTHDAY);
       else if (f === '出身校') add(COL.ALMA_MATER);
+      else if (f === '退局' || f === '在籍') add(COL.RETIRED);
+      else if (f === '次年度継続') add(COL.CONTINUE_NEXT);
       else if (f === '所属局1') { add(COL.ORG_START + 0 * 3); }
       else if (f === '所属部門1') { add(COL.ORG_START + 0 * 3 + 1); }
       else if (f === '役職1') { add(COL.ORG_START + 0 * 3 + 2); }
-      else if (f === '所属局2～5') {
-        for (let k = 1; k <= 4; k++) add(COL.ORG_START + k * 3);
-      } else if (f === '所属部門2～5') {
-        for (let k = 1; k <= 4; k++) add(COL.ORG_START + k * 3 + 1);
-      } else if (f === '役職2～5') {
-        for (let k = 1; k <= 4; k++) add(COL.ORG_START + k * 3 + 2);
-      } else if (f === '車所有') add(COL.CAR_OWNER);
+      else if (f === '所属局2') { add(COL.ORG_START + 1 * 3); }
+      else if (f === '所属部門2') { add(COL.ORG_START + 1 * 3 + 1); }
+      else if (f === '役職2') { add(COL.ORG_START + 1 * 3 + 2); }
+      else if (f === '所属局3') { add(COL.ORG_START + 2 * 3); }
+      else if (f === '所属部門3') { add(COL.ORG_START + 2 * 3 + 1); }
+      else if (f === '役職3') { add(COL.ORG_START + 2 * 3 + 2); }
+      else if (f === '所属局4') { add(COL.ORG_START + 3 * 3); }
+      else if (f === '所属部門4') { add(COL.ORG_START + 3 * 3 + 1); }
+      else if (f === '役職4') { add(COL.ORG_START + 3 * 3 + 2); }
+      else if (f === '所属局5') { add(COL.ORG_START + 4 * 3); }
+      else if (f === '所属部門5') { add(COL.ORG_START + 4 * 3 + 1); }
+      else if (f === '役職5') { add(COL.ORG_START + 4 * 3 + 2); }
+      else if (f === '車所有') add(COL.CAR_OWNER);
       else if (f === 'Admin') add(COL.ADMIN);
     }
 
@@ -1234,15 +1341,38 @@ function createRosterCsv(sessionToken, params) {
 
     if (indices.length === 0) throw new Error('出力項目が選択されていません');
 
-    // フィルタ処理
+    // フィルタ処理 (status: 'active'|'retired'|'all'), grade, field
+    const statusFilter = (filter && filter.status) ? filter.status : 'active';
+    if ((statusFilter === 'retired' || statusFilter === 'all') && !isAdmin) {
+      throw new Error('退局者または全員の出力は管理者のみ可能です');
+    }
     const outRows = [];
     for (let i = 1; i < usersData.length; i++) {
       const row = usersData[i];
       if (!row[COL.EMAIL]) continue;
 
+      // 学年・分野フィルタ
+      if (filter && filter.grade) {
+        if ((row[COL.GRADE] || '') !== String(filter.grade)) continue;
+      }
+      if (filter && filter.field) {
+        if ((row[COL.FIELD] || '') !== String(filter.field)) continue;
+      }
+
       let include = false;
-      if (!filter || filter.type === 'all') include = true;
-      else if (filter.type === 'orgs' && Array.isArray(filter.selections) && filter.selections.length > 0) {
+      // status check: RETIRED true means 退局
+      if (statusFilter === 'all') include = true;
+      else if (statusFilter === 'active') {
+        if (!(row[COL.RETIRED] === true || row[COL.RETIRED] === 'TRUE')) include = true;
+      } else if (statusFilter === 'retired') {
+        if (row[COL.RETIRED] === true || row[COL.RETIRED] === 'TRUE') include = true;
+      }
+      if (!include) continue;
+
+      // org-based filtering continues
+      if (!filter || filter.type === 'all') {
+        // already included by status/grade/field
+      } else if (filter.type === 'orgs' && Array.isArray(filter.selections) && filter.selections.length > 0) {
         // orgMatchMode: 'mainOnly' or 'allAffiliations'
         const mode = filter.orgMatchMode === 'mainOnly' ? 'mainOnly' : 'allAffiliations';
         for (const sel of filter.selections) {
@@ -1268,7 +1398,7 @@ function createRosterCsv(sessionToken, params) {
         }
       }
 
-      if (!include) continue;
+      // include determined by above checks
 
       const outRow = indices.map(ci => row[ci] === undefined || row[ci] === null ? '' : row[ci]);
       outRows.push(outRow);
@@ -1283,30 +1413,70 @@ function createRosterCsv(sessionToken, params) {
       return s;
     };
 
+    // 正規化: 生年月日を必ず YYYY/MM/DD に変換し、Date オブジェクトはフォーマットする
+    const formattedOutRows = outRows.map(r => r.map((cell, j) => {
+      const origCol = indices[j];
+      if (origCol === COL.BIRTHDAY) {
+        if (!cell && cell !== 0) return '';
+        if (Object.prototype.toString.call(cell) === '[object Date]' || cell instanceof Date) {
+          try { return Utilities.formatDate(new Date(cell), 'Asia/Tokyo', 'yyyy/MM/dd'); } catch (e) { return String(cell); }
+        }
+        // try parseable string
+        const s = String(cell).trim();
+        const d = new Date(s);
+        if (!isNaN(d.getTime())) return Utilities.formatDate(d, 'Asia/Tokyo', 'yyyy/MM/dd');
+        // common separators
+        return s.replace(/-/g, '/').replace(/\./g, '/');
+      }
+      if (cell === true) return 'TRUE';
+      if (cell === false) return 'FALSE';
+      return cell === undefined || cell === null ? '' : cell;
+    }));
+
     const rows = [];
     rows.push(headersOut.map(escape).join(','));
-    outRows.forEach(r => rows.push(r.map(escape).join(',')));
+    formattedOutRows.forEach(r => rows.push(r.map(escape).join(',')));
     const body = rows.join('\r\n');
+
+    // Prepare matrix for spreadsheet export (ensure consistent column count)
+    const matrix = [headersOut].concat(formattedOutRows.map(r => r.map(c => c === undefined || c === null ? '' : c)));
 
     // ファイル名: クライアントが指定すればそれを優先、なければサーバ側の Tokyo 時刻で生成
     const ts = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyyMMddHHmmss');
     const filename = (params && params.filename) ? String(params.filename) : ('list_' + ts + '.csv');
 
-    // Shift_JIS 出力を試みる（Blob によるエンコード）。成功したら base64 バイナリを返す。
+    // Create Excel (.xlsx) by writing matrix to a temporary Spreadsheet and exporting
     try {
-      const blob = Utilities.newBlob('');
-      // setDataFromString が利用可能であれば Shift_JIS でセット
-      if (typeof blob.setDataFromString === 'function') {
-        blob.setDataFromString(body, 'Shift_JIS');
-      } else {
-        // 互換性フォールバック：直接 newBlob(body) を使う（UTF-8）
-        blob.setBytes(Utilities.newBlob(body).getBytes());
-      }
-      const bytes = blob.getBytes();
-      const b64 = Utilities.base64Encode(bytes);
-      return { success: true, csvBase64: b64, filename: filename, encoding: 'shift_jis' };
+      const tempName = 'tmp_export_' + ts;
+      const tempSs = SpreadsheetApp.create(tempName);
+      const sh = tempSs.getSheets()[0];
+      // ensure dimensions
+      const numRows = matrix.length;
+      const numCols = headersOut.length || 1;
+      // pad rows to numCols
+      const norm = matrix.map(r => {
+        const nr = r.slice();
+        while (nr.length < numCols) nr.push('');
+        return nr;
+      });
+      sh.getRange(1,1, norm.length, numCols).setValues(norm);
+      // export as xlsx
+      const file = DriveApp.getFileById(tempSs.getId());
+      const xlsxBlob = file.getBlob().getAs('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      const excelB64 = Utilities.base64Encode(xlsxBlob.getBytes());
+      // remove temp spreadsheet
+      try { DriveApp.getFileById(tempSs.getId()).setTrashed(true); } catch(e) {}
+
+      // also prepare CSV (UTF-8 BOM)
+      const bom = '\uFEFF';
+      const csv = bom + body;
+      const encoded = Utilities.newBlob(csv, 'text/csv;charset=utf-8');
+      const bytes = encoded.getBytes();
+      const csvB64 = Utilities.base64Encode(bytes);
+
+      return { success: true, csvBase64: csvB64, csv: csv, excelBase64: excelB64, filename: filename, encoding: 'utf-8-bom' };
     } catch (e) {
-      // フォールバック: UTF-8 with BOM
+      // fallback: return CSV with BOM
       const bom = '\uFEFF';
       const csv = bom + body;
       return { success: true, csv: csv, filename: filename, encoding: 'utf-8' };
