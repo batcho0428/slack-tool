@@ -24,7 +24,8 @@ const COL = {
   BIRTHDAY: 7,
   ALMA_MATER: 8,
   ORG_START: 9,
-  CAR_OWNER: 24
+  CAR_OWNER: 24,
+  ADMIN: 25
 };
 
 // Tokensシートの列定義 (新規)
@@ -42,7 +43,7 @@ const HEADER_USERS = [
   '所属局3', '所属部門3', '役職3',
   '所属局4', '所属部門4', '役職4',
   '所属局5', '所属部門5', '役職5',
-  '車所有'
+  '車所有', 'Admin'
 ];
 
 const HEADER_TOKENS = ['Session ID', 'Email', 'Slack Token', 'Created At'];
@@ -116,9 +117,18 @@ function setupSpreadsheet() {
     sheetUsers.getRange(startRow, baseCol + 2, numRows, 1).setDataValidation(ruleRole);
   }
 
-  // 車所有 (Y列)
-  const ruleCarOwner = SpreadsheetApp.newDataValidation().requireValueInList(['TRUE', 'FALSE']).setAllowInvalid(true).build();
-  sheetUsers.getRange(startRow, 25, numRows, 1).setDataValidation(ruleCarOwner);
+  // 車所有 (Y列) と Admin列をチェックボックスに変更（フォールバックあり）
+  try {
+    sheetUsers.getRange(startRow, COL.CAR_OWNER + 1, numRows, 1).insertCheckboxes();
+  } catch (e) {
+    const ruleCarOwner = SpreadsheetApp.newDataValidation().requireValueInList(['TRUE', 'FALSE']).setAllowInvalid(true).build();
+    sheetUsers.getRange(startRow, COL.CAR_OWNER + 1, numRows, 1).setDataValidation(ruleCarOwner);
+  }
+  try {
+    sheetUsers.getRange(startRow, COL.ADMIN + 1, numRows, 1).insertCheckboxes();
+  } catch (e) {
+    // ignore
+  }
 
   // --- C. 条件付き書式 ---
   sheetUsers.clearConditionalFormatRules();
@@ -150,6 +160,21 @@ function setupSpreadsheet() {
   sheetUsers.setConditionalFormatRules(rules);
 
   installTriggers();
+  // マイグレーション: 既存の 'TRUE'/'FALSE' 文字列を boolean に変換
+  try {
+    const lastRowUsers = sheetUsers.getLastRow();
+    if (lastRowUsers >= startRow) {
+      const carRange = sheetUsers.getRange(startRow, COL.CAR_OWNER + 1, lastRowUsers - startRow + 1, 1);
+      const carVals = carRange.getValues().map(r => [(r[0] === 'TRUE' || r[0] === true) ? true : false]);
+      carRange.setValues(carVals);
+
+      const adminRange = sheetUsers.getRange(startRow, COL.ADMIN + 1, lastRowUsers - startRow + 1, 1);
+      const adminVals = adminRange.getValues().map(r => [(r[0] === 'TRUE' || r[0] === true) ? true : false]);
+      adminRange.setValues(adminVals);
+    }
+  } catch (e) {
+    console.warn('Checkbox migration failed:', e.toString());
+  }
   console.log("セットアップ完了");
 }
 
@@ -540,27 +565,34 @@ function getSlackID(token, email) {
 /* --------------------------------------------------------------------------
  * 4. マイページ機能 (プロフィール取得・更新)
  * -------------------------------------------------------------------------- */
-function getUserProfile(sessionToken) {
+function getUserProfile(sessionToken, targetEmail) {
   const login = getLoginUser(sessionToken);
   if (login.status !== 'authorized') throw new Error("認証されていません");
 
   const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
   const sheet = ss.getSheetByName(SHEET_USERS);
   const data = sheet.getDataRange().getValues();
-  const row = data.find(r => r[COL.EMAIL] === login.user.email);
 
+  // 管理者判定はログインユーザーの Users 行の Z 列 (COL.ADMIN)
+  const loginRow = data.find(r => r[COL.EMAIL] === login.user.email);
+  const isAdmin = loginRow && (loginRow[COL.ADMIN] === 'TRUE' || loginRow[COL.ADMIN] === true);
+
+  const emailToFetch = (targetEmail && isAdmin) ? targetEmail : login.user.email;
+  const row = data.find(r => r[COL.EMAIL] === emailToFetch);
   if (!row) throw new Error("データが見つかりません");
 
-  // 編集可能なフィールドを返す (日付は文字列変換)
+  const birthdayVal = row[COL.BIRTHDAY] instanceof Date ? Utilities.formatDate(row[COL.BIRTHDAY], Session.getScriptTimeZone(), 'yyyy-MM-dd') : (row[COL.BIRTHDAY] || '');
+  const viewedIsAdmin = row[COL.ADMIN] === 'TRUE' || row[COL.ADMIN] === true;
+
   return {
-    name: row[COL.NAME_JP], // 編集不可
+    name: row[COL.NAME_JP],
     nameEn: row[COL.NAME_EN],
-    email: row[COL.EMAIL],  // 編集不可
+    email: row[COL.EMAIL],
     studentId: row[COL.STUDENT_ID],
     grade: row[COL.GRADE],
     field: row[COL.FIELD],
     phone: row[COL.PHONE],
-    birthday: row[COL.BIRTHDAY] instanceof Date ? Utilities.formatDate(row[COL.BIRTHDAY], Session.getScriptTimeZone(), 'yyyy/MM/dd') : row[COL.BIRTHDAY],
+    birthday: birthdayVal,
     almaMater: row[COL.ALMA_MATER],
     carOwner: row[COL.CAR_OWNER] === 'TRUE' || row[COL.CAR_OWNER] === true,
     orgs: [
@@ -569,11 +601,13 @@ function getUserProfile(sessionToken) {
       { org: row[COL.ORG_START+6], dept: row[COL.ORG_START+7], role: row[COL.ORG_START+8] },
       { org: row[COL.ORG_START+9], dept: row[COL.ORG_START+10], role: row[COL.ORG_START+11] },
       { org: row[COL.ORG_START+12], dept: row[COL.ORG_START+13], role: row[COL.ORG_START+14] }
-    ]
+    ],
+    canEditNameEmail: isAdmin,
+    isAdmin: viewedIsAdmin
   };
 }
 
-function updateUserProfile(sessionToken, formData) {
+function updateUserProfile(sessionToken, formData, targetEmail) {
   const login = getLoginUser(sessionToken);
   if (login.status !== 'authorized') throw new Error("認証されていません");
 
@@ -581,9 +615,15 @@ function updateUserProfile(sessionToken, formData) {
   const sheet = ss.getSheetByName(SHEET_USERS);
   const data = sheet.getDataRange().getValues();
 
+  // 管理者判定 (ログインユーザーの ADMIN 列)
+  const loginRow = data.find(r => r[COL.EMAIL] === login.user.email);
+  const isAdmin = loginRow && (loginRow[COL.ADMIN] === 'TRUE' || loginRow[COL.ADMIN] === true);
+
+  const emailToSave = (targetEmail && isAdmin) ? targetEmail : login.user.email;
+
   let rowIndex = -1;
   for(let i=1; i<data.length; i++) {
-    if (data[i][COL.EMAIL] === login.user.email) {
+    if (String(data[i][COL.EMAIL]).trim().toLowerCase() === String(emailToSave).trim().toLowerCase()) {
       rowIndex = i + 1;
       break;
     }
@@ -591,19 +631,36 @@ function updateUserProfile(sessionToken, formData) {
   if (rowIndex === -1) throw new Error("ユーザーが見つかりません");
 
   // 更新処理
-  sheet.getRange(rowIndex, COL.NAME_EN + 1).setValue(formData.nameEn);
-  sheet.getRange(rowIndex, COL.STUDENT_ID + 1).setValue(formData.studentId);
-  sheet.getRange(rowIndex, COL.GRADE + 1).setValue(formData.grade);
-  sheet.getRange(rowIndex, COL.FIELD + 1).setValue(formData.field);
-  sheet.getRange(rowIndex, COL.PHONE + 1).setValue(formData.phone);
-  sheet.getRange(rowIndex, COL.BIRTHDAY + 1).setValue(formData.birthday);
-  sheet.getRange(rowIndex, COL.ALMA_MATER + 1).setValue(formData.almaMater);
-  sheet.getRange(rowIndex, COL.CAR_OWNER + 1).setValue(formData.carOwner ? 'TRUE' : 'FALSE');
+  const normalizeSpace = (s) => {
+    if (s === null || s === undefined) return '';
+    return String(s).replace(/\u3000/g, ' ').replace(/\s+/g, ' ').trim();
+  };
+
+  // 英語名は常に保存
+  sheet.getRange(rowIndex, COL.NAME_EN + 1).setValue(normalizeSpace(formData.nameEn || ''));
+
+  sheet.getRange(rowIndex, COL.STUDENT_ID + 1).setValue(formData.studentId || '');
+  sheet.getRange(rowIndex, COL.GRADE + 1).setValue(formData.grade || '');
+  sheet.getRange(rowIndex, COL.FIELD + 1).setValue(formData.field || '');
+  sheet.getRange(rowIndex, COL.PHONE + 1).setValue(formData.phone || '');
+
+  // 生年月日: フロント側は yyyy-MM-dd を渡す想定。空でなければ Date として保存。
+  if (formData.birthday) {
+    const d = new Date(formData.birthday);
+    if (!isNaN(d.getTime())) sheet.getRange(rowIndex, COL.BIRTHDAY + 1).setValue(d);
+  } else {
+    sheet.getRange(rowIndex, COL.BIRTHDAY + 1).setValue('');
+  }
+
+  sheet.getRange(rowIndex, COL.ALMA_MATER + 1).setValue(formData.almaMater || '');
+  sheet.getRange(rowIndex, COL.CAR_OWNER + 1).setValue(formData.carOwner ? true : false);
 
   // 所属情報 (5セット)
   if (formData.orgs && Array.isArray(formData.orgs)) {
     for (let k = 0; k < 5; k++) {
       if (k < formData.orgs.length) {
+        // 所属局1 (k===0) の編集は管理者のみ許可
+        if (k === 0 && !isAdmin) continue;
         const o = formData.orgs[k];
         const baseCol = COL.ORG_START + (k * 3) + 1;
         sheet.getRange(rowIndex, baseCol).setValue(o.org || "");
@@ -611,6 +668,13 @@ function updateUserProfile(sessionToken, formData) {
         sheet.getRange(rowIndex, baseCol + 2).setValue(o.role || "");
       }
     }
+  }
+
+  // 管理者は氏名・メール・管理フラグの編集が可能
+  if (isAdmin) {
+    if (formData.name) sheet.getRange(rowIndex, COL.NAME_JP + 1).setValue(normalizeSpace(formData.name));
+    if (formData.email) sheet.getRange(rowIndex, COL.EMAIL + 1).setValue(String(formData.email).trim().toLowerCase());
+    if (typeof formData.isAdmin !== 'undefined') sheet.getRange(rowIndex, COL.ADMIN + 1).setValue(formData.isAdmin ? true : false);
   }
 
   return { success: true };
@@ -842,4 +906,62 @@ function handleSpreadsheetEdit(e) {
   } else {
     deptRange.clearDataValidation();
   }
+}
+
+/* --------------------------------------------------------------------------
+ * 管理者列初期化バッチ
+ * Users シートのヘッダに 'Admin' を追加し、Z列の空セルを FALSE に設定します
+ * -------------------------------------------------------------------------- */
+function initAdminColumnDefaults() {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(SHEET_USERS);
+  if (!sheet) throw new Error('Users シートが見つかりません');
+
+  const lastCol = Math.max(sheet.getLastColumn(), COL.ADMIN + 1);
+  const headerRange = sheet.getRange(1, 1, 1, lastCol);
+  const headers = headerRange.getValues()[0];
+
+  // ヘッダが短ければ拡張
+  if (headers.length < COL.ADMIN + 1) {
+    const newHeaders = headers.slice();
+    for (let i = headers.length; i < COL.ADMIN; i++) newHeaders[i] = '';
+    newHeaders[COL.ADMIN] = 'Admin';
+    sheet.getRange(1, 1, 1, newHeaders.length).setValues([newHeaders]);
+  } else {
+    // 既存ヘッダに Admin をセット（上書きでも安全）
+    sheet.getRange(1, COL.ADMIN + 1).setValue('Admin');
+  }
+
+  // データ行の Admin 列が空の行は FALSE に設定
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { success: true, message: 'ヘッダのみです' };
+
+  const colRange = sheet.getRange(2, COL.ADMIN + 1, lastRow - 1, 1);
+  const colVals = colRange.getValues();
+  let updated = 0;
+  for (let i = 0; i < colVals.length; i++) {
+    const v = colVals[i][0];
+    if (v === '' || v === null || typeof v === 'undefined') {
+      colVals[i][0] = false;
+      updated++;
+    } else if (v === 'TRUE') {
+      colVals[i][0] = true;
+    } else if (v === 'FALSE') {
+      colVals[i][0] = false;
+    }
+  }
+  if (updated > 0) colRange.setValues(colVals);
+  // Admin列をチェックボックス化（データ行）
+  try {
+    sheet.getRange(2, COL.ADMIN + 1, lastRow - 1, 1).insertCheckboxes();
+  } catch (e) {
+    // ignore
+  }
+  // CAR_OWNER列もチェックボックス化（データ行）
+  try {
+    sheet.getRange(2, COL.CAR_OWNER + 1, lastRow - 1, 1).insertCheckboxes();
+  } catch (e) {
+    // ignore
+  }
+  return { success: true, updated: updated };
 }
