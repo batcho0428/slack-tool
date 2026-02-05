@@ -123,7 +123,13 @@
 
             const checkLogin = (token) => {
                 runGas('getLoginUser', token).then(res => {
-                    if (res.status === 'authorized') { setUser(res.user); setView('main'); }
+                    if (res.status === 'authorized') {
+                        setUser({ ...res.user, hasToken: !!res.hasToken });
+                        setView('main');
+                        if (!res.hasToken) {
+                            runGas('getAuthUrl').then(url => setAuthUrl(url)).catch(()=>{});
+                        }
+                    }
                     else if (res.status === 'guest') { runGas('getAuthUrl').then(url => { setAuthUrl(url); setView('guest'); }); }
                     else { throw new Error(res.message); }
                 }).catch(e => { setErrorMsg(e.message); setView('error'); });
@@ -273,8 +279,8 @@
                         </button>
                     </div>
                     <div className="flex-1 overflow-hidden relative">
-                        {tab === 'dm' && <DmTab currentUserEmail={user.email} />}
-                        {tab === 'channel' && <ChannelTab currentUserEmail={user.email} />}
+                        {tab === 'dm' && <DmTab user={user} authUrl={authUrl} />}
+                        {tab === 'channel' && <ChannelTab user={user} authUrl={authUrl} />}
                         {tab === 'mypage' && <MyPage />}
                     </div>
                 </div>
@@ -483,7 +489,7 @@
             );
         }
 
-        function DmTab({ currentUserEmail }) {
+        function DmTab({ user, authUrl }) {
             const [message, setMessage] = useState('');
             const [recipients, setRecipients] = useState([]);
             const [modalOpen, setModalOpen] = useState(false);
@@ -492,6 +498,25 @@
             const [result, setResult] = useState(null);
             const [dialog, setDialog] = useState({ isOpen: false, type: 'alert', message: '', onOk: null, onCancel: null });
             const txtRef = useRef(null);
+            const [loginUrl, setLoginUrl] = useState(authUrl || '');
+
+            useEffect(() => {
+                if (!loginUrl) runGas('getAuthUrl').then(url => setLoginUrl(url)).catch(()=>{});
+            }, []);
+
+            if (user && !user.hasToken) {
+                return (
+                    <div className="flex flex-col items-center justify-center h-full p-6 text-center">
+                        <div className="max-w-md w-full bg-white rounded-lg shadow p-6">
+                            <h3 className="text-lg font-bold mb-2">Slackアカウントが連携されていません</h3>
+                            <p className="text-sm text-gray-600 mb-4">Slackアカウントが連携されていないため、この機能は使用できません。</p>
+                            <button onClick={() => { if (loginUrl) window.top.location.href = loginUrl; }} className="w-full bg-[#4A154B] text-white font-bold py-3 rounded-lg shadow hover:bg-[#381039] transition flex items-center justify-center text-sm">
+                                <i className="fab fa-slack text-lg mr-2"></i> Slackアカウントでログイン
+                            </button>
+                        </div>
+                    </div>
+                );
+            }
 
             const insertMention = () => {
                 const t = txtRef.current;
@@ -555,7 +580,7 @@
                             {sending ? `送信中 (${progress}%)` : <span><i className="far fa-paper-plane mr-2"></i>DMを一斉送信</span>}
                         </button>
                     </div>
-                    {modalOpen && <SearchModal currentUserEmail={currentUserEmail} onClose={()=>setModalOpen(false)} onAdd={(ls)=>{
+                    {modalOpen && <SearchModal currentUserEmail={user.email} onClose={()=>setModalOpen(false)} onAdd={(ls)=>{
                         const ids = new Set(recipients.map(r=>r.email));
                         setRecipients([...recipients, ...ls.filter(r=>!ids.has(r.email))]);
                         setModalOpen(false);
