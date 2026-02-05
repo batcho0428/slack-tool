@@ -581,13 +581,11 @@
 
             useEffect(() => {
                 setLoadingChannels(true);
-                setDialog({ isOpen: true, type: 'loading', message: 'チャンネル取得中...', onOk: null, onCancel: null });
                 runGas('getChannels', localStorage.getItem('slack_app_session'))
                     .then(setChannels)
                     .catch(e => setDialog({ isOpen: true, type: 'alert', message: "チャンネル取得エラー: " + e.message, onOk: closeDialog }))
                     .finally(() => {
                         setLoadingChannels(false);
-                        setDialog(prev => prev.type === 'loading' ? { ...prev, isOpen: false } : prev);
                     });
             }, []);
 
@@ -613,6 +611,14 @@
                 } catch(e) { setDialog({ isOpen: true, type: 'alert', message: "エラー: " + e.message, onOk: closeDialog }); }
                 finally { setSending(false); }
             };
+
+            if (loadingChannels && channels.length === 0) {
+                return (
+                    <div className="flex justify-center items-center h-full text-gray-500">
+                        <i className="fas fa-spinner fa-spin mr-2"></i>チャンネル取得中...
+                    </div>
+                );
+            }
 
             return (
                 <div className="flex flex-col h-full p-3 md:p-6 space-y-3 md:space-y-4 overflow-y-auto">
