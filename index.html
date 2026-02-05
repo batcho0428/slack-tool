@@ -591,7 +591,7 @@
             );
         }
 
-        function ChannelTab({ currentUserEmail }) {
+        function ChannelTab({ user, authUrl }) {
             const [channels, setChannels] = useState([]);
             const [selectedChannel, setSelectedChannel] = useState('');
             const [recipients, setRecipients] = useState([]);
@@ -601,10 +601,16 @@
             const [progress, setProgress] = useState(0);
             const [result, setResult] = useState(null);
             const [dialog, setDialog] = useState({ isOpen: false, type: 'alert', message: '', onOk: null, onCancel: null });
+            const [loginUrl, setLoginUrl] = useState(authUrl || '');
+
+            useEffect(() => {
+                if (!loginUrl) runGas('getAuthUrl').then(url => setLoginUrl(url)).catch(()=>{});
+            }, []);
 
             const closeDialog = () => setDialog(prev => ({ ...prev, isOpen: false }));
 
             useEffect(() => {
+                if (user && !user.hasToken) return; // トークン無しなら取得しない
                 setLoadingChannels(true);
                 runGas('getChannels', localStorage.getItem('slack_app_session'))
                     .then(setChannels)
@@ -612,7 +618,7 @@
                     .finally(() => {
                         setLoadingChannels(false);
                     });
-            }, []);
+            }, [user]);
 
             const handleInviteClick = () => {
                 if(!selectedChannel) { setDialog({ isOpen: true, type: 'alert', message: "チャンネルを選択してください", onOk: closeDialog }); return; }
@@ -637,10 +643,16 @@
                 finally { setSending(false); }
             };
 
-            if (loadingChannels && channels.length === 0) {
+            if (user && !user.hasToken) {
                 return (
-                    <div className="flex justify-center items-center h-full text-gray-500">
-                        <i className="fas fa-spinner fa-spin mr-2"></i>チャンネル取得中...
+                    <div className="flex flex-col items-center justify-center h-full p-6 text-center">
+                        <div className="max-w-md w-full bg-white rounded-lg shadow p-6">
+                            <h3 className="text-lg font-bold mb-2">Slackアカウントが連携されていません</h3>
+                            <p className="text-sm text-gray-600 mb-4">Slackアカウントが連携されていないため、この機能は使用できません。</p>
+                            <button onClick={() => { if (loginUrl) window.top.location.href = loginUrl; }} className="w-full bg-[#4A154B] text-white font-bold py-3 rounded-lg shadow hover:bg-[#381039] transition flex items-center justify-center text-sm">
+                                <i className="fab fa-slack text-lg mr-2"></i> Slackアカウントでログイン
+                            </button>
+                        </div>
                     </div>
                 );
             }
@@ -663,7 +675,7 @@
                             {sending ? `処理中 (${progress}%)` : <span><i className="fas fa-user-plus mr-2"></i>チャンネルに追加</span>}
                         </button>
                     </div>
-                    {modalOpen && <SearchModal currentUserEmail={currentUserEmail} onClose={()=>setModalOpen(false)} onAdd={(ls)=>{
+                    {modalOpen && <SearchModal currentUserEmail={user.email} onClose={()=>setModalOpen(false)} onAdd={(ls)=>{
                         const ids = new Set(recipients.map(r=>r.email));
                         setRecipients([...recipients, ...ls.filter(r=>!ids.has(r.email))]);
                         setModalOpen(false);
