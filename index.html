@@ -55,28 +55,7 @@
                         .withFailureHandler(reject)
                         [funcName](...args);
                 } else {
-                    console.log(`[Mock] Calling ${funcName}`, args);
-                    setTimeout(() => {
-                        // モックデータ定義
-                        if (funcName === 'getLoginUser') resolve({ status: 'authorized', user: { name: "MockUser", email: "mock@example.com" } });
-                        else if (funcName === 'getChannels') resolve([{id:'C1', name:'general'}, {id:'C2', name:'random', is_private:true}]);
-                        else if (funcName === 'getSearchOptions') resolve({
-                            grades: ["B1", "B2", "B3", "B4", "M1", "M2"],
-                            fields: ["Info", "Mech", "Elec"],
-                            roles: ["部長", "メンバー"],
-                            orgs: ["局A", "局B"],
-                            deptMaster: [{org: "局A", dept: "開発部"}, {org: "局A", dept: "広報部"}, {org: "局B", dept: "営業部"}]
-                        });
-                        else if (funcName === 'searchRecipients') resolve(Array(5).fill(0).map((_,i)=>({name:`User ${i}`, email:`u${i}@ex.com`, department:"局A 開発部", grade:"B4", field:"Info"})));
-                        else if (funcName === 'requestLoginOtp') resolve({ success: true });
-                        else if (funcName === 'verifyLoginOtp') resolve({ success: true, token: 'mock-session-token' });
-                        else if (funcName === 'getUserProfile') resolve({
-                            name: "MockUser", email: "mock@example.com", studentId: "12345678", grade: "B3", field: "Info", phone: "09000000000", birthday: "2000/01/01", almaMater: "HighSchool",
-                            orgs: [{org:"局A", dept:"開発部", role:"Member"}, {}, {}, {}, {}]
-                        });
-                        else if (funcName === 'updateUserProfile') resolve({ success: true });
-                        else resolve({ success: args[args.length-1].length, failed: [] });
-                    }, 800);
+                    reject(new Error('Google Apps Script環境が必要です'));
                 }
             });
         };
