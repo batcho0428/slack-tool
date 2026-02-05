@@ -278,12 +278,275 @@
                         <button onClick={() => setTab('mypage')} className={`flex-1 py-3 text-center font-bold text-sm border-b-2 transition ${tab === 'mypage' ? 'border-purple-600 text-purple-600 bg-white' : 'border-transparent text-gray-500 hover:bg-gray-100'}`}>
                             <i className="fas fa-id-card mr-2"></i> マイページ
                         </button>
+                        <button onClick={() => setTab('roster')} className={`flex-1 py-3 text-center font-bold text-sm border-b-2 transition ${tab === 'roster' ? 'border-indigo-600 text-indigo-600 bg-white' : 'border-transparent text-gray-500 hover:bg-gray-100'}`}>
+                            <i className="fas fa-list mr-2"></i> 名簿
+                        </button>
                     </div>
                     <div className="flex-1 overflow-hidden relative">
                         {tab === 'dm' && <DmTab user={user} authUrl={authUrl} />}
                         {tab === 'channel' && <ChannelTab user={user} authUrl={authUrl} />}
                         {tab === 'mypage' && <MyPage />}
+                        {tab === 'roster' && <RosterTab user={user} />}
                     </div>
+                </div>
+            );
+        }
+
+        function RosterTab({ user }) {
+            const [isAdmin, setIsAdmin] = useState(false);
+            const [fields] = useState([
+                { key: '氏名', label: '氏名', adminOnly: false },
+                { key: 'Name', label: 'Name', adminOnly: false },
+                { key: '学籍番号', label: '学籍番号', adminOnly: true },
+                { key: '分野', label: '分野', adminOnly: false },
+                { key: 'メールアドレス', label: 'メールアドレス', adminOnly: false },
+                { key: '電話番号', label: '電話番号', adminOnly: true },
+                { key: '生年月日', label: '生年月日', adminOnly: true },
+                { key: '出身校', label: '出身校', adminOnly: true },
+                { key: '所属局1', label: '所属局1', adminOnly: false },
+                { key: '所属部門1', label: '所属部門1', adminOnly: false },
+                { key: '役職1', label: '役職1', adminOnly: false },
+                { key: '所属局2～5', label: '所属局2～5', adminOnly: false },
+                { key: '所属部門2～5', label: '所属部門2～5', adminOnly: false },
+                { key: '役職2～5', label: '役職2～5', adminOnly: false },
+                { key: '車所有', label: '車所有', adminOnly: true },
+                { key: 'Admin', label: 'Admin', adminOnly: true }
+            ]);
+
+            const [selected, setSelected] = useState(new Set());
+            const [selectAll, setSelectAll] = useState(false);
+            const [modalOpen, setModalOpen] = useState(false);
+            const [filename, setFilename] = useState('');
+            const [busy, setBusy] = useState(false);
+
+            // 対象選択（全員 or 局ごと）
+            const [targetType, setTargetType] = useState('all'); // 'all' or 'orgs'
+            const [orgMatchMode, setOrgMatchMode] = useState('mainOnly'); // 'mainOnly' or 'allAffiliations'
+            const [orgList, setOrgList] = useState([]); // [{name, depts: []}]
+            const [orgChecked, setOrgChecked] = useState({}); // {orgName: true}
+            const [deptChecked, setDeptChecked] = useState({}); // {orgName: {deptName: true}}
+
+            useEffect(() => {
+                const token = localStorage.getItem('slack_app_session');
+                runGas('getUserProfile', token).then(p => { setIsAdmin(!!p.isAdmin); }).catch(()=>{});
+
+                // デフォルトファイル名（Tokyo timezone）
+                const now = new Date();
+                const parts = now.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', hour12: false });
+                const nums = parts.replace(/[^0-9]/g, '');
+                const defName = 'list_' + nums.slice(0,14);
+                setFilename(defName + '.csv');
+
+                // 取得して局・部門を構築
+                runGas('getSearchOptions').then(o => {
+                    try {
+                        const orgs = (o && o.orgs) ? Array.from(new Set(o.orgs)) : [];
+                        const deptMaster = o && o.deptMaster ? o.deptMaster : [];
+                        const map = orgs.map(org => ({ name: org, depts: [] }));
+                        const m = {};
+                        orgs.forEach(org => { m[org] = new Set(); });
+                        deptMaster.forEach(d => { if (d.org && d.dept && m[d.org]) m[d.org].add(d.dept); });
+                        const final = orgs.map(org => ({ name: org, depts: Array.from(m[org] || []) }));
+                        setOrgList(final);
+                        const oc = {}; const dc = {};
+                        final.forEach(o2 => { oc[o2.name] = false; dc[o2.name] = {}; o2.depts.forEach(d=>dc[o2.name][d]=false); });
+                        setOrgChecked(oc); setDeptChecked(dc);
+                    } catch (e) { console.warn(e); }
+                }).catch(()=>{});
+            }, []);
+
+            const toggleField = (k, adminOnly) => {
+                if (adminOnly && !isAdmin) return;
+                const s = new Set(Array.from(selected));
+                if (s.has(k)) s.delete(k); else s.add(k);
+                setSelected(s);
+                // update selectAll state
+                const available = fields.filter(f=>!(f.adminOnly && !isAdmin)).map(f=>f.key);
+                const allSelected = available.every(a=>s.has(a));
+                setSelectAll(allSelected);
+            };
+
+            const toggleSelectAll = () => {
+                const available = fields.filter(f=>!(f.adminOnly && !isAdmin)).map(f=>f.key);
+                if (selectAll) {
+                    setSelected(new Set());
+                    setSelectAll(false);
+                } else {
+                    setSelected(new Set(available));
+                    setSelectAll(true);
+                }
+            };
+
+            useEffect(()=>{
+                const available = fields.filter(f=>!(f.adminOnly && !isAdmin)).map(f=>f.key);
+                const allSelected = available.length>0 && available.every(a=>selected.has(a));
+                setSelectAll(allSelected);
+            }, [isAdmin, selected]);
+
+            // available keys for UI disabling
+            const availableKeys = fields.filter(f=>!(f.adminOnly && !isAdmin)).map(f=>f.key);
+
+            const toggleOrg = (orgName) => {
+                const oc = { ...orgChecked, [orgName]: !orgChecked[orgName] };
+                setOrgChecked(oc);
+                // toggle all depts
+                const dc = { ...deptChecked };
+                const map = dc[orgName] || {};
+                const newMap = {};
+                Object.keys(map).forEach(k => { newMap[k] = !orgChecked[orgName]; });
+                dc[orgName] = newMap;
+                setDeptChecked(dc);
+            };
+
+            const toggleDept = (orgName, deptName) => {
+                const dc = { ...deptChecked };
+                if (!dc[orgName]) dc[orgName] = {};
+                dc[orgName][deptName] = !dc[orgName][deptName];
+                setDeptChecked(dc);
+            };
+
+            const openExportModal = async () => { setModalOpen(true); };
+
+            const doExport = async () => {
+                if (selected.size === 0) { alert('出力項目を選択してください'); return; }
+                setBusy(true);
+                try {
+                    const token = localStorage.getItem('slack_app_session');
+                    const arr = Array.from(selected);
+
+                    // 絞り込み条件を構築
+                    let filter = { type: 'all' };
+                    if (targetType === 'orgs') {
+                        const sels = [];
+                        orgList.forEach(o => {
+                            const allDepts = (o.depts || []);
+                            const checkedDepts = (deptChecked[o.name]) ? Object.keys(deptChecked[o.name]).filter(d=>deptChecked[o.name][d]) : [];
+                            if (orgChecked[o.name]) {
+                                // org checked -> if all departments checked or none specific, add org-only match
+                                if (checkedDepts.length === 0 || checkedDepts.length === allDepts.length) {
+                                    sels.push({ org: o.name, dept: '' });
+                                } else {
+                                    checkedDepts.forEach(d=>sels.push({ org: o.name, dept: d }));
+                                }
+                            } else {
+                                // org not checked but some depts checked
+                                if (checkedDepts.length > 0) checkedDepts.forEach(d=>sels.push({ org: o.name, dept: d }));
+                            }
+                        });
+                        filter = { type: 'orgs', orgMatchMode: orgMatchMode, selections: sels };
+                    }
+
+                    // 出力ボタンを押した時刻（Tokyo）をファイル名にしてサーバへ送る
+                    const now = new Date();
+                    const fmt = new Intl.DateTimeFormat('ja-JP', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+                    const parts = fmt.formatToParts(now);
+                    const get = (type) => (parts.find(p=>p.type===type)||{}).value || '';
+                    const ts = get('year') + get('month') + get('day') + get('hour') + get('minute') + get('second');
+                    const filenameAtPress = 'list_' + ts + '.csv';
+
+                    const res = await runGas('createRosterCsv', token, { selectedFields: arr, filter: filter, filename: filenameAtPress });
+                    if (res && res.success) {
+                        const fname = filenameAtPress || res.filename || 'list.csv';
+                        if (res.encoding === 'shift_jis' && res.csvBase64) {
+                            // base64 をデコードしてバイナリとしてダウンロード
+                            const b64 = res.csvBase64;
+                            const bin = atob(b64);
+                            const len = bin.length;
+                            const u8 = new Uint8Array(len);
+                            for (let i = 0; i < len; i++) u8[i] = bin.charCodeAt(i);
+                            const blob = new Blob([u8], { type: 'text/csv;charset=Shift_JIS' });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a'); a.href = url; a.download = fname; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+                        } else {
+                            const csv = res.csv || '';
+                            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a'); a.href = url; a.download = fname; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+                        }
+                        setModalOpen(false);
+                    } else {
+                        alert(res.message || '作成に失敗しました');
+                    }
+                } catch (e) { alert(e.message || e); }
+                finally { setBusy(false); }
+            };
+
+            return (
+                <div className="flex flex-col h-full p-4 md:p-6 bg-gray-50">
+                    <div className="max-w-4xl mx-auto bg-white rounded-lg shadow-sm p-6 h-full overflow-y-auto">
+                        <h3 className="text-lg font-bold mb-3">名簿出力</h3>
+                        <p className="text-sm text-gray-600 mb-4">出力したい項目を選択し、出力対象を設定して「出力」を押してください。管理者のみ車所有とAdminが選択できます。</p>
+
+                        <div className="mb-4">
+                            <h4 className="font-medium mb-2">出力項目</h4>
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                                <label className={`flex items-center p-2 border rounded ${availableKeys.length===0 ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-white'}`} onClick={availableKeys.length===0 ? undefined : toggleSelectAll} title={availableKeys.length===0 ? '選択可能な項目がありません' : 'すべて選択'}>
+                                    <input type="checkbox" checked={selectAll} disabled={availableKeys.length===0} readOnly className="mr-3 w-4 h-4" />
+                                    <span className="text-sm font-medium">すべて選択</span>
+                                </label>
+                                {fields.map(f => (
+                                    <label key={f.key} className={`flex items-center p-2 border rounded ${f.adminOnly && !isAdmin ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-white'}`} onClick={f.adminOnly && !isAdmin ? undefined : () => toggleField(f.key, f.adminOnly)} title={f.adminOnly && !isAdmin ? '管理者のみ選択可能' : ''} aria-disabled={f.adminOnly && !isAdmin}>
+                                        <input type="checkbox" checked={selected.has(f.key)} disabled={f.adminOnly && !isAdmin} readOnly className="mr-3 w-4 h-4" />
+                                        <span className="text-sm">{f.label}</span>
+                                    </label>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="mb-4">
+                            <h4 className="font-medium mb-2">出力対象</h4>
+                            <div className="flex items-center space-x-4 mb-3">
+                                <label className="flex items-center"><input type="radio" name="targetType" checked={targetType==='all'} onChange={()=>setTargetType('all')} className="mr-2" /> 全員</label>
+                                <label className="flex items-center"><input type="radio" name="targetType" checked={targetType==='orgs'} onChange={()=>setTargetType('orgs')} className="mr-2" /> 局ごと</label>
+                            </div>
+
+                            {targetType === 'orgs' && (
+                                <div>
+                                    <div className="mb-2 text-sm">局ごとのマッチ方法：</div>
+                                    <label className="mr-4"><input type="radio" name="orgMode" checked={orgMatchMode==='mainOnly'} onChange={()=>setOrgMatchMode('mainOnly')} className="mr-2" /> 主所属局、部門のみ</label>
+                                    <label><input type="radio" name="orgMode" checked={orgMatchMode==='allAffiliations'} onChange={()=>setOrgMatchMode('allAffiliations')} className="mr-2" /> 所属する全員</label>
+
+                                    <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        {orgList.map(o => (
+                                            <div key={o.name} className="border rounded p-3">
+                                                <label className="flex items-center mb-2">
+                                                    <input type="checkbox" className="mr-2" checked={!!orgChecked[o.name]} onChange={()=>toggleOrg(o.name)} />
+                                                    <span className="font-medium">{o.name}</span>
+                                                </label>
+                                                <div className="pl-6">
+                                                    {(o.depts||[]).length===0 ? <div className="text-sm text-gray-500">部門情報なし</div> : o.depts.map(d => (
+                                                        <label key={d} className="flex items-center text-sm"><input type="checkbox" className="mr-2" checked={deptChecked[o.name] ? !!deptChecked[o.name][d] : false} onChange={()=>toggleDept(o.name, d)} />{d}</label>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="text-right">
+                            <button onClick={openExportModal} disabled={busy} className={`bg-indigo-600 text-white px-6 py-3 rounded-lg font-bold shadow hover:bg-indigo-700 ${busy?'opacity-60':'opacity-100'}`}>
+                                出力
+                            </button>
+                        </div>
+                    </div>
+
+                    {modalOpen && (
+                        <div className="fixed inset-0 flex items-center justify-center modal-overlay p-4 z-[200]">
+                            <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg p-6 flex flex-col animate-fade-in">
+                                <h4 className="font-bold mb-3">ファイル名</h4>
+                                <div className="mb-4">
+                                    <label className="text-xs text-gray-600">ダウンロードファイル名（変更可）</label>
+                                    <input className="w-full border p-2 rounded mt-1" value={filename} onChange={e=>setFilename(e.target.value)} />
+                                </div>
+                                <div className="flex justify-end space-x-3">
+                                    <button onClick={()=>setModalOpen(false)} className="px-4 py-2 rounded bg-gray-100">キャンセル</button>
+                                    <button onClick={doExport} disabled={busy} className="px-4 py-2 rounded bg-indigo-600 text-white">ダウンロード</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
                 </div>
             );
         }

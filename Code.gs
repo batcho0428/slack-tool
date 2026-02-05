@@ -1049,3 +1049,269 @@ function initAdminColumnDefaults() {
   }
   return { success: true, updated: updated };
 }
+
+/* --------------------------------------------------------------------------
+ * 7. 名簿出力機能
+ * - 共有フォルダIDはスクリプトプロパティ 'EXPORT_SHARED_FOLDER_ID' に保存する想定
+ * - フロントからはフォルダ一覧取得と、選択した項目でスプレッドシートを生成するAPIを提供
+ * -------------------------------------------------------------------------- */
+
+function listExportFolders() {
+  try {
+    const rootId = getScriptProperty('EXPORT_SHARED_FOLDER_ID');
+    if (!rootId) return { success: false, message: '共有フォルダが設定されていません' };
+    // Use Advanced Drive service to list child folders
+    const folders = [];
+    const q = "'" + rootId + "' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false";
+    const res = Drive.Files.list({ q: q, fields: 'items(id,title)' });
+    if (res && res.items) {
+      res.items.forEach(item => folders.push({ id: item.id, name: item.title }));
+    }
+    // get root title
+    let rootName = '';
+    try {
+      const r = Drive.Files.get(rootId, { fields: 'id,title' });
+      rootName = r && r.title ? r.title : '';
+    } catch (e) {
+      rootName = '';
+    }
+    return { success: true, folders: [{ id: rootId, name: rootName }].concat(folders) };
+  } catch (e) {
+    return { success: false, message: e.toString() };
+  }
+}
+
+function createRosterSpreadsheet(sessionToken, selectedFields, folderId, filename) {
+  // sessionToken: to validate user and permissions
+  try {
+    const login = getLoginUser(sessionToken);
+    if (login.status !== 'authorized') throw new Error('認証されていません');
+
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const usersSheet = ss.getSheetByName(SHEET_USERS);
+    if (!usersSheet) throw new Error('Users シートが見つかりません');
+
+    // 管理者判定
+    const usersData = usersSheet.getDataRange().getValues();
+    const loginRow = usersData.find(r => r[COL.EMAIL] === login.user.email);
+    const isAdmin = loginRow && (loginRow[COL.ADMIN] === 'TRUE' || loginRow[COL.ADMIN] === true);
+
+    // no special "すべての項目" handling anymore
+
+    // Build mapping from requested labels to column indexes in Users sheet
+    const indices = [];
+    const headersOut = [];
+
+    const pushIf = (label, idx) => { headersOut.push(label); indices.push(idx); };
+
+    // helper to add org/dept/role sequences
+    const pushOrgSeq = (baseIdx, labelBase) => {
+      for (let k = 0; k < 5; k++) {
+        const idx = baseIdx + (k * 3);
+        pushIf(labelBase + String(k + 1), idx);
+      }
+    };
+
+    // map requested labels to columns
+    selectedFields = selectedFields || [];
+    for (let f of selectedFields) {
+      if (f === '氏名') pushIf('氏名', COL.NAME_JP);
+      else if (f === 'Name') pushIf('Name', COL.NAME_EN);
+      else if (f === '学年') pushIf('学年', COL.GRADE);
+      else if (f === '分野') pushIf('分野', COL.FIELD);
+      else if (f === 'メールアドレス') pushIf('メールアドレス', COL.EMAIL);
+      else if (f === '所属局1～5' || f === '所属局1') pushOrgSeq(COL.ORG_START, '所属局');
+      else if (f === '所属部門1～5' || f === '所属部門1') pushOrgSeq(COL.ORG_START + 1, '所属部門');
+      else if (f === '役職1～5' || f === '役職1') pushOrgSeq(COL.ORG_START + 2, '役職');
+      else if (f === '車所有') pushIf('車所有', COL.CAR_OWNER);
+      else if (f === 'Admin') pushIf('Admin', COL.ADMIN);
+    }
+
+    if (indices.length === 0) throw new Error('出力項目が選択されていません');
+
+    // Read users data rows and build output rows
+    const outRows = [];
+    for (let i = 1; i < usersData.length; i++) {
+      const row = usersData[i];
+      // skip empty rows (メールアドレスが空なら無視)
+      if (!row[COL.EMAIL]) continue;
+      const outRow = indices.map(ci => row[ci] === undefined || row[ci] === null ? '' : row[ci]);
+      outRows.push(outRow);
+    }
+
+    // Create new spreadsheet via Sheets API (Advanced Service)
+    const title = filename || ('名簿_' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd_HHmm'));
+    const resource = { properties: { title: title } };
+    const created = Sheets.Spreadsheets.create(resource);
+    const newId = created.spreadsheetId;
+    const sheetName = (created.sheets && created.sheets[0] && created.sheets[0].properties && created.sheets[0].properties.title) ? created.sheets[0].properties.title : 'Sheet1';
+
+    // write header and rows via Sheets API
+    try {
+      Sheets.Spreadsheets.Values.update({ values: [headersOut] }, newId, sheetName + '!A1', { valueInputOption: 'RAW' });
+      if (outRows.length > 0) {
+        Sheets.Spreadsheets.Values.update({ values: outRows }, newId, sheetName + '!A2', { valueInputOption: 'RAW' });
+      }
+    } catch (e) {
+      console.warn('Sheets write failed:', e.toString());
+    }
+
+    // Move file into target folder using Drive API (Advanced Drive service)
+    try {
+      // add to target and remove from root
+      Drive.Files.update({}, newId, { addParents: folderId, removeParents: 'root' });
+    } catch (e) {
+      console.warn('フォルダ移動失敗:', e.toString());
+    }
+
+    return { success: true, url: 'https://docs.google.com/spreadsheets/d/' + newId, id: newId };
+  } catch (e) {
+    return { success: false, message: e.toString() };
+  }
+}
+
+/**
+ * CSV 出力版: Drive に保存せず CSV 文字列を返す
+ * フロントでダウンロード処理を行う
+ */
+function createRosterCsv(sessionToken, params) {
+  try {
+    const login = getLoginUser(sessionToken);
+    if (login.status !== 'authorized') throw new Error('認証されていません');
+
+    params = params || {};
+    const selectedFields = params.selectedFields || [];
+    const filter = params.filter || { type: 'all' };
+
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const usersSheet = ss.getSheetByName(SHEET_USERS);
+    if (!usersSheet) throw new Error('Users シートが見つかりません');
+
+    // 管理者判定
+    const usersData = usersSheet.getDataRange().getValues();
+    const loginRow = usersData.find(r => r[COL.EMAIL] === login.user.email);
+    const isAdmin = loginRow && (loginRow[COL.ADMIN] === 'TRUE' || loginRow[COL.ADMIN] === true);
+
+    // no special "すべての項目" handling
+
+    // 出力項目マッピング
+    const adminOnlyFields = ['学籍番号','電話番号','生年月日','出身校','車所有','Admin'];
+    // 管理者権限のないユーザーが管理者専用項目を要求していないか確認
+    if (!isAdmin) {
+      for (const f of selectedFields || []) {
+        if (adminOnlyFields.indexOf(f) !== -1) throw new Error('管理者権限が必要な項目が含まれています');
+      }
+    }
+
+    const allowedIdxSet = new Set();
+    const add = (idx) => { if (typeof idx === 'number' && idx >= 0) allowedIdxSet.add(idx); };
+
+    for (let f of selectedFields || []) {
+      if (f === '氏名') add(COL.NAME_JP);
+      else if (f === 'Name') add(COL.NAME_EN);
+      else if (f === '学籍番号') add(COL.STUDENT_ID);
+      else if (f === '学年') add(COL.GRADE);
+      else if (f === '分野') add(COL.FIELD);
+      else if (f === 'メールアドレス') add(COL.EMAIL);
+      else if (f === '電話番号') add(COL.PHONE);
+      else if (f === '生年月日') add(COL.BIRTHDAY);
+      else if (f === '出身校') add(COL.ALMA_MATER);
+      else if (f === '所属局1') { add(COL.ORG_START + 0 * 3); }
+      else if (f === '所属部門1') { add(COL.ORG_START + 0 * 3 + 1); }
+      else if (f === '役職1') { add(COL.ORG_START + 0 * 3 + 2); }
+      else if (f === '所属局2～5') {
+        for (let k = 1; k <= 4; k++) add(COL.ORG_START + k * 3);
+      } else if (f === '所属部門2～5') {
+        for (let k = 1; k <= 4; k++) add(COL.ORG_START + k * 3 + 1);
+      } else if (f === '役職2～5') {
+        for (let k = 1; k <= 4; k++) add(COL.ORG_START + k * 3 + 2);
+      } else if (f === '車所有') add(COL.CAR_OWNER);
+      else if (f === 'Admin') add(COL.ADMIN);
+    }
+
+    const indices = Array.from(allowedIdxSet).sort((a,b)=>a-b);
+    const headersOut = indices.map(i => HEADER_USERS[i] || '');
+
+    if (indices.length === 0) throw new Error('出力項目が選択されていません');
+
+    // フィルタ処理
+    const outRows = [];
+    for (let i = 1; i < usersData.length; i++) {
+      const row = usersData[i];
+      if (!row[COL.EMAIL]) continue;
+
+      let include = false;
+      if (!filter || filter.type === 'all') include = true;
+      else if (filter.type === 'orgs' && Array.isArray(filter.selections) && filter.selections.length > 0) {
+        // orgMatchMode: 'mainOnly' or 'allAffiliations'
+        const mode = filter.orgMatchMode === 'mainOnly' ? 'mainOnly' : 'allAffiliations';
+        for (const sel of filter.selections) {
+          const targetOrg = sel.org;
+          const targetDept = sel.dept || '';
+          if (mode === 'mainOnly') {
+            const org1 = row[COL.ORG_START];
+            const dept1 = row[COL.ORG_START + 1];
+            if (targetOrg && org1 === targetOrg) {
+              if (!targetDept || dept1 === targetDept) { include = true; break; }
+            }
+          } else {
+            // any affiliation match
+            for (let k = 0; k < 5; k++) {
+              const o = row[COL.ORG_START + k * 3];
+              const d = row[COL.ORG_START + k * 3 + 1];
+              if (o && o === targetOrg) {
+                if (!targetDept || d === targetDept) { include = true; break; }
+              }
+            }
+            if (include) break;
+          }
+        }
+      }
+
+      if (!include) continue;
+
+      const outRow = indices.map(ci => row[ci] === undefined || row[ci] === null ? '' : row[ci]);
+      outRows.push(outRow);
+    }
+
+    // CSV 生成（Excelの文字化け対策: UTF-8 BOM を先頭に付与）
+    const escape = (v) => {
+      if (v === null || typeof v === 'undefined') return '';
+      const s = String(v);
+      if (s.indexOf('"') !== -1) return '"' + s.replace(/"/g, '""') + '"';
+      if (s.indexOf(',') !== -1 || s.indexOf('\n') !== -1 || s.indexOf('\r') !== -1) return '"' + s + '"';
+      return s;
+    };
+
+    const rows = [];
+    rows.push(headersOut.map(escape).join(','));
+    outRows.forEach(r => rows.push(r.map(escape).join(',')));
+    const body = rows.join('\r\n');
+
+    // ファイル名: クライアントが指定すればそれを優先、なければサーバ側の Tokyo 時刻で生成
+    const ts = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyyMMddHHmmss');
+    const filename = (params && params.filename) ? String(params.filename) : ('list_' + ts + '.csv');
+
+    // Shift_JIS 出力を試みる（Blob によるエンコード）。成功したら base64 バイナリを返す。
+    try {
+      const blob = Utilities.newBlob('');
+      // setDataFromString が利用可能であれば Shift_JIS でセット
+      if (typeof blob.setDataFromString === 'function') {
+        blob.setDataFromString(body, 'Shift_JIS');
+      } else {
+        // 互換性フォールバック：直接 newBlob(body) を使う（UTF-8）
+        blob.setBytes(Utilities.newBlob(body).getBytes());
+      }
+      const bytes = blob.getBytes();
+      const b64 = Utilities.base64Encode(bytes);
+      return { success: true, csvBase64: b64, filename: filename, encoding: 'shift_jis' };
+    } catch (e) {
+      // フォールバック: UTF-8 with BOM
+      const bom = '\uFEFF';
+      const csv = bom + body;
+      return { success: true, csv: csv, filename: filename, encoding: 'utf-8' };
+    }
+  } catch (e) {
+    return { success: false, message: e.toString() };
+  }
+}
