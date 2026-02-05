@@ -399,9 +399,21 @@ function handleSlackCallback(code) {
       <body style="display:flex; justify-content:center; align-items:center; height:100vh; background:#f3f4f6; margin:0; font-family: sans-serif;">
         <div style="background:white; padding:40px; border-radius:10px; text-align:center; box-shadow:0 4px 6px rgba(0,0,0,0.1); max-width: 400px; width: 90%;">
           <h2 style="color:#059669; margin-bottom: 20px;">連携完了</h2>
+          <br>
+          <br>
+          <p>自動的に画面が変わらない時は、 ツールへ戻る をクリックしてください。
+          <button onClick={redirectTop}  className="bg-blue-600 text-white px-8 py-3 rounded-lg font-bold shadow-lg hover:bg-blue-700 transition active:scale-95 disabled:bg-gray-400">
+                                {saving ? <i className="fas fa-spinner fa-spin"></i> : 'ツールへ戻る'}
+                            </button>
           <script>
             localStorage.setItem('slack_app_session', '${newSessionToken}');
-            window.top.location.href = '${scriptUrl}';
+            if (scriptUrl) window.top.location.href = scriptUrl;
+                else window.location.reload();
+
+            const redirectTop = async () => {
+                if (scriptUrl) window.top.location.href = scriptUrl;
+                else window.location.reload();
+            }
           </script>
         </div>
       </body>
