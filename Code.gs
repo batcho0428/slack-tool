@@ -23,10 +23,7 @@ const COL = {
   PHONE: 6,
   BIRTHDAY: 7,
   ALMA_MATER: 8,
-  ORG_START: 9,
-  // 旧トークン列 (互換性維持・バックアップ用に定義のみ残す)
-  SLACK_TOKEN_OLD: 24,
-  SESSION_TOKEN_OLD: 25
+  ORG_START: 9
 };
 
 // Tokensシートの列定義 (新規)
@@ -43,8 +40,7 @@ const HEADER_USERS = [
   '所属局2', '所属部門2', '役職2',
   '所属局3', '所属部門3', '役職3',
   '所属局4', '所属部門4', '役職4',
-  '所属局5', '所属部門5', '役職5',
-  'Old Slack Token', 'Old Session Token'
+  '所属局5', '所属部門5', '役職5'
 ];
 
 const HEADER_TOKENS = ['Session ID', 'Email', 'Slack Token', 'Created At'];
@@ -320,21 +316,11 @@ function verifyLoginOtp(email, code) {
   // セッション発行
   const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
   const tokensSheet = ss.getSheetByName(SHEET_TOKENS);
-  const usersSheet = ss.getSheetByName(SHEET_USERS);
-
-  // 既存のUser Token (xoxp) があれば引き継ぐ
-  // (OAuth済みのトークンがUsersシートの旧列に残っていればそれをコピーして使用する)
-  const userData = usersSheet.getDataRange().getValues();
-  const userRow = userData.find(r => String(r[COL.EMAIL]).trim().toLowerCase() === targetEmail);
-  let existingSlackToken = "";
-  if (userRow && userRow[COL.SLACK_TOKEN_OLD] && userRow[COL.SLACK_TOKEN_OLD].toString().startsWith('xoxp-')) {
-    existingSlackToken = userRow[COL.SLACK_TOKEN_OLD];
-  }
 
   const newSessionToken = Utilities.getUuid();
   const timestamp = new Date();
 
-  tokensSheet.appendRow([newSessionToken, targetEmail, existingSlackToken, timestamp]);
+  tokensSheet.appendRow([newSessionToken, targetEmail, "", timestamp]);
 
   return { success: true, token: newSessionToken };
 }
