@@ -1,13 +1,14 @@
 /* --------------------------------------------------------------------------
  * 設定 & 定数定義
  * -------------------------------------------------------------------------- */
-const APP_NAME = 'Slack-tool';
+const APP_NAME = '45th NUTFES 実行委員マスタ';
 const APP_HEADER_COLOR = '#1a237e'; // 紺色
 
 // SPREADSHEET_IDは関数実行時に取得（定数化によるタイミング問題を回避）
 const SHEET_USERS = 'Users';
 const SHEET_LOGS = 'Logs';
 const SHEET_OPTIONS = 'Options';
+const SHEET_FORMS = 'Forms';
 const SHEET_TOKENS = 'Tokens'; // 新規テーブル
 
 const SESSION_DURATION_DAYS = 3; // セッション有効期限(日)
@@ -40,8 +41,8 @@ const COL_TOKENS = {
 
 const HEADER_USERS = [
   '氏名', 'Name', '学籍番号', '学年', '分野', 'メールアドレス', '電話番号', '生年月日', '出身校',
-  '退局', '次年度継続', 'Admin (12)', '車所有',
-  '所属局1', '所属部門1', '役職1',
+  '退局', '次年度継続', 'Admin', '車所有',
+  '所属局1', '所属部門1', '役職1', 'Admin (12)',
   '所属局2', '所属部門2', '役職2',
   '所属局3', '所属部門3', '役職3',
   '所属局4', '所属部門4', '役職4',
@@ -50,10 +51,88 @@ const HEADER_USERS = [
 
 const HEADER_TOKENS = ['Session ID', 'Email', 'Slack Token', 'Created At'];
 const HEADER_OPTIONS = ['学年リスト', '分野リスト', '役職リスト', '所属局リスト', '部門マスタ(局)', '部門マスタ(部門)'];
+const HEADER_FORMS = ['アンケートシート', 'フォームURL', 'フォームタイトル', '担当局', '担当部門', '収集中', 'スコアの名前', 'スコアの単位'];
 const HEADER_LOGS = ['Time', 'Sender', 'Recipient', 'Status', 'Details'];
 
 function getScriptProperty(key) {
   return PropertiesService.getScriptProperties().getProperty(key);
+}
+
+/**
+ * Debug helper: probe Forms sheet rows and report whether target spreadsheet and form can be opened.
+ * Returns array of { rowIndex, rawA, rawB, spreadsheetId, ssOpen:bool, ssError, formOpen:bool, formError }
+ */
+function debugProbeForms() {
+  const out = [];
+  try {
+    const ssMain = SpreadsheetApp.openById(getSpreadsheetId());
+    const fs = ssMain.getSheetByName(SHEET_FORMS);
+    if (!fs) return { success: false, message: 'Forms シートが存在しません' };
+      const lr = fs.getLastRow();
+      if (lr < 2) return { success: true, probes: [] };
+      const cols = Math.max(3, HEADER_FORMS.length);
+      const rows = fs.getRange(2,1,Math.max(0, lr-1), cols).getValues();
+    for (let i = 0; i < rows.length; i++) {
+      const a = String(rows[i][0] || '').trim();
+      const b = String(rows[i][1] || '').trim();
+      const entry = { rowIndex: i+2, rawA: a, rawB: b, spreadsheetId: null, ssOpen: false, ssError: null, formOpen: false, formError: null };
+      try {
+        const sid = _extractSpreadsheetId(a) || a || null;
+        entry.spreadsheetId = sid;
+        if (sid) {
+          try { const targetSs = SpreadsheetApp.openById(sid); entry.ssOpen = true; }
+          catch (e) { entry.ssOpen = false; entry.ssError = String(e); }
+        } else {
+          entry.ssError = 'スプレッドシートIDが見つかりません';
+        }
+        if (b) {
+          try {
+            let formObj = null;
+            try { formObj = FormApp.openByUrl(b); } catch (ee) {
+              const fid = _extractFormId(b);
+              if (fid) formObj = FormApp.openById(fid);
+            }
+            if (formObj) entry.formOpen = true; else entry.formError = 'FormAppで開けませんでした';
+          } catch (e) { entry.formOpen = false; entry.formError = String(e); }
+        }
+      } catch (e) {
+        entry.ssError = entry.ssError || String(e);
+      }
+      out.push(entry);
+    }
+    return { success: true, probes: out };
+  } catch (e) {
+    return { success: false, message: String(e) };
+  }
+}
+
+// Stores in Script Properties (JSON maps)
+// sessions: sessionId -> { email, created }
+// tokensByEmail: email -> { slackToken, created }
+const SESSIONS_PROP_KEY = 'SESSIONS_STORE';
+const TOKENS_BY_EMAIL_PROP_KEY = 'TOKENS_BY_EMAIL_STORE';
+const TOKENS_PROP_MAX = 200000; // safe threshold (characters). 古いものから削除して収める
+
+function _loadStore(key) {
+  const raw = PropertiesService.getScriptProperties().getProperty(key);
+  if (!raw) return {};
+  try { return JSON.parse(raw); } catch (e) { return {}; }
+}
+
+function _saveStore(key, obj) {
+  let serialized = JSON.stringify(obj);
+  if (serialized.length <= TOKENS_PROP_MAX) {
+    PropertiesService.getScriptProperties().setProperty(key, serialized);
+    return;
+  }
+  // remove oldest entries until it fits
+  const entries = Object.keys(obj).map(k => ({ k, created: obj[k] && obj[k].created ? obj[k].created : 0 }));
+  entries.sort((a, b) => a.created - b.created);
+  for (let i = 0; i < entries.length && serialized.length > TOKENS_PROP_MAX; i++) {
+    delete obj[entries[i].k];
+    serialized = JSON.stringify(obj);
+  }
+  PropertiesService.getScriptProperties().setProperty(key, serialized);
 }
 
 function getSpreadsheetId() {
@@ -73,6 +152,85 @@ function setupSpreadsheet() {
   if (!sheetOptions) sheetOptions = ss.insertSheet(SHEET_OPTIONS);
   if (sheetOptions.getLastRow() === 0) sheetOptions.getRange(1, 1, 1, HEADER_OPTIONS.length).setValues([HEADER_OPTIONS]);
 
+  // 1b. Formsシート (アンケート情報を専用シートに移行)
+  let sheetForms = ss.getSheetByName(SHEET_FORMS);
+  if (!sheetForms) sheetForms = ss.insertSheet(SHEET_FORMS);
+  // Ensure header row contains our expected HEADER_FORMS columns. Preserve existing non-empty headers when possible.
+  try {
+    const existingCols = Math.max(1, sheetForms.getLastColumn());
+    const cols = Math.max(existingCols, HEADER_FORMS.length);
+    const cur = sheetForms.getRange(1, 1, 1, cols).getValues()[0] || [];
+    const newHeaders = [];
+    for (let i = 0; i < HEADER_FORMS.length; i++) {
+      // prefer existing header if non-empty, else use standard
+      newHeaders[i] = (cur[i] && String(cur[i]).trim()) ? String(cur[i]) : HEADER_FORMS[i];
+    }
+    sheetForms.getRange(1, 1, 1, newHeaders.length).setValues([newHeaders]);
+
+    // Ensure '収集中' column is formatted as checkboxes and normalize existing values
+    const collectingIdx = newHeaders.findIndex(h => String(h || '').trim() === '収集中');
+    if (collectingIdx >= 0) {
+      try {
+        const startRow = 2;
+        const lastRow = Math.max(sheetForms.getLastRow(), startRow);
+        const numRows = Math.max(1, lastRow - 1);
+        // convert existing TRUE/FALSE strings to booleans
+        try {
+          const range = sheetForms.getRange(startRow, collectingIdx + 1, numRows, 1);
+          const vals = range.getValues();
+          const norm = vals.map(r => {
+            const v = r[0];
+            if (v === true || v === 'TRUE' || String(v).toLowerCase() === 'true') return [true];
+            if (v === false || v === 'FALSE' || String(v).toLowerCase() === 'false') return [false];
+            return [false];
+          });
+          range.setValues(norm);
+        } catch (e) {
+          // ignore conversion errors
+        }
+        // insert checkbox formatting
+        try { sheetForms.getRange(startRow, collectingIdx + 1, numRows, 1).insertCheckboxes(); }
+        catch (e) {
+          // fallback: data validation to TRUE/FALSE
+          try { sheetForms.getRange(startRow, collectingIdx + 1, numRows, 1).setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(['TRUE','FALSE']).setAllowInvalid(true).build()); } catch (ee) {}
+        }
+      } catch (e) {
+        // ignore per-sheet failures
+      }
+    }
+  } catch (e) {
+    // fallback: set headers directly
+    try { sheetForms.getRange(1, 1, 1, HEADER_FORMS.length).setValues([HEADER_FORMS]); } catch (ee) {}
+  }
+
+  // migrate existing Options G:I -> Forms if present (pad to new column count)
+  try {
+    const lastOptRow = sheetOptions.getLastRow();
+    if (lastOptRow >= 2) {
+      const surveyRows = sheetOptions.getRange(2, 7, Math.max(0, lastOptRow - 1), 3).getValues();
+      const exist = {};
+      const lastFormRow = sheetForms.getLastRow();
+      if (lastFormRow >= 2) {
+        const cur = sheetForms.getRange(2,1,Math.max(0,lastFormRow-1),1).getValues().map(r=>String(r[0]||''));
+        cur.forEach(v=>{ if (v) exist[v.trim()] = true; });
+      }
+      const toAppend = [];
+      const padLen = HEADER_FORMS.length;
+      surveyRows.forEach(r => {
+        const sName = String(r[0] || '').trim();
+        const url = String(r[1] || '').trim();
+        const title = String(r[2] || '').trim();
+        if (sName && !exist[sName]) {
+          const row = new Array(padLen).fill('');
+          row[0] = sName; row[1] = url; row[2] = title;
+          toAppend.push(row);
+          exist[sName]=true;
+        }
+      });
+      if (toAppend.length>0) sheetForms.getRange(sheetForms.getLastRow()+1, 1, toAppend.length, padLen).setValues(toAppend);
+    }
+  } catch (e) { /* ignore migration errors */ }
+
   // 2. Usersシート
   let sheetUsers = ss.getSheetByName(SHEET_USERS);
   if (!sheetUsers) sheetUsers = ss.insertSheet(SHEET_USERS);
@@ -83,16 +241,7 @@ function setupSpreadsheet() {
   if (!sheetLogs) sheetLogs = ss.insertSheet(SHEET_LOGS);
   if (sheetLogs.getLastRow() === 0) sheetLogs.getRange(1, 1, 1, HEADER_LOGS.length).setValues([HEADER_LOGS]);
 
-  // 4. Tokensシート (新規作成 & 非表示)
-  let sheetTokens = ss.getSheetByName(SHEET_TOKENS);
-  if (!sheetTokens) {
-    sheetTokens = ss.insertSheet(SHEET_TOKENS);
-  }
-  if (sheetTokens.getLastRow() === 0) {
-    sheetTokens.getRange(1, 1, 1, HEADER_TOKENS.length).setValues([HEADER_TOKENS]);
-  }
-  // マイグレーション時に非表示にする
-  sheetTokens.hideSheet();
+  // Tokens は PropertiesService に移行したためシートは作成しない
 
   // --- A. 書式設定 ---
   const startRow = 2;
@@ -224,64 +373,32 @@ function getLoginUser(sessionToken) {
     if (!sessionToken) return { status: 'guest' };
 
     const ss = SpreadsheetApp.openById(getSpreadsheetId());
-    const tokensSheet = ss.getSheetByName(SHEET_TOKENS);
     const usersSheet = ss.getSheetByName(SHEET_USERS);
+    if (!usersSheet) return { status: 'error', message: "DB構成エラー" };
 
-    if (!tokensSheet || !usersSheet) return { status: 'error', message: "DB構成エラー" };
+    const sessions = _loadStore(SESSIONS_PROP_KEY);
+    const entry = sessions[sessionToken];
+    if (!entry) return { status: 'guest' };
 
-    const tokenData = tokensSheet.getDataRange().getValues();
-    let tokenRowIndex = -1;
-    let userEmail = "";
-    let slackToken = "";
-
-    // セッション検索 & 有効期限チェック
-    // 逆順でループして最新を探す＆古い無効なものを掃除するのも手だが、ここではシンプルに検索
-    // *期限切れチェック時に行削除を行う*
-    const rowsToDelete = [];
-
-    for (let i = 1; i < tokenData.length; i++) {
-      if (tokenData[i][COL_TOKENS.SESSION_ID] === sessionToken) {
-        const createdAt = new Date(tokenData[i][COL_TOKENS.CREATED_AT]);
-        const now = new Date();
-        const diffDays = (now - createdAt) / (1000 * 60 * 60 * 24);
-
-        if (diffDays > SESSION_DURATION_DAYS) {
-          // 期限切れ: 行を削除してゲスト扱い
-          rowsToDelete.push(i + 1);
-          continue;
-        }
-
-        tokenRowIndex = i + 1;
-        userEmail = tokenData[i][COL_TOKENS.EMAIL];
-        slackToken = tokenData[i][COL_TOKENS.SLACK_TOKEN];
-        break;
-      }
-    }
-
-    // 期限切れ行の削除 (後ろから削除してインデックスずれを防止)
-    if (rowsToDelete.length > 0) {
-      rowsToDelete.sort((a, b) => b - a); // 降順でソート
-      rowsToDelete.forEach(row => {
-        try {
-          tokensSheet.deleteRow(row);
-        } catch (e) {
-          // 行削除失敗時はログして続行
-          console.warn('Failed to delete row ' + row + ':', e.message);
-        }
-      });
+    const now = Date.now();
+    const created = entry.created || 0;
+    const diffDays = (now - created) / (1000 * 60 * 60 * 24);
+    if (diffDays > SESSION_DURATION_DAYS) {
+      delete sessions[sessionToken];
+      _saveStore(SESSIONS_PROP_KEY, sessions);
       return { status: 'guest', message: 'セッション有効期限切れ' };
     }
 
-    if (tokenRowIndex === -1) return { status: 'guest' };
+    const userEmail = entry.email;
+    const tokensByEmail = _loadStore(TOKENS_BY_EMAIL_PROP_KEY);
+    const tokenEntry = tokensByEmail[userEmail] || {};
+    const slackToken = tokenEntry.slackToken || '';
 
     // ユーザー情報取得
     const userData = usersSheet.getDataRange().getValues();
-    const userRow = userData.find(r => r[COL.EMAIL] === userEmail);
-
+    const userRow = userData.find(r => String(r[COL.EMAIL] || '').trim().toLowerCase() === String(userEmail).trim().toLowerCase());
     if (!userRow) return { status: 'error', message: "ユーザー情報が見つかりません" };
 
-    // Slackのトークン接頭辞は環境や種別により 'xoxp-', 'xoxb-', 'xoxa-', 'xoxc-' 等があるため
-    // 'xox' で始まるものは連携済みとみなす
     const hasToken = !!slackToken && slackToken.toString().startsWith('xox');
     return {
       status: 'authorized',
@@ -292,6 +409,19 @@ function getLoginUser(sessionToken) {
   } catch (e) {
     return { status: 'error', message: "認証エラー: " + e.toString() };
   }
+}
+
+function _requireAdmin(sessionToken) {
+  const login = getLoginUser(sessionToken);
+  if (!login || login.status !== 'authorized') throw new Error('認証されていません');
+  const ss = SpreadsheetApp.openById(getSpreadsheetId());
+  const usersSheet = ss.getSheetByName(SHEET_USERS);
+  if (!usersSheet) throw new Error('Users シートが見つかりません');
+  const usersData = usersSheet.getDataRange().getValues();
+  const row = usersData.find(r => String(r[COL.EMAIL] || '').trim().toLowerCase() === String(login.user.email || '').trim().toLowerCase());
+  const isAdmin = row && (row[COL.ADMIN] === 'TRUE' || row[COL.ADMIN] === true);
+  if (!isAdmin) throw new Error('管理者権限が必要です');
+  return login;
 }
 
 // 1-A. OTPリクエスト (BotからDM送信)
@@ -389,14 +519,11 @@ function verifyLoginOtp(email, code) {
   PropertiesService.getScriptProperties().deleteProperty(propKey);
 
   // セッション発行
-  const ss = SpreadsheetApp.openById(getSpreadsheetId());
-  const tokensSheet = ss.getSheetByName(SHEET_TOKENS);
-
   const newSessionToken = Utilities.getUuid();
-  const timestamp = new Date();
-
-  tokensSheet.appendRow([newSessionToken, targetEmail, "", timestamp]);
-
+  const nowTs = Date.now();
+  const sessions = _loadStore(SESSIONS_PROP_KEY);
+  sessions[newSessionToken] = { email: targetEmail, created: nowTs };
+  _saveStore(SESSIONS_PROP_KEY, sessions);
   return { success: true, token: newSessionToken };
 }
 
@@ -438,22 +565,27 @@ function handleSlackCallback(code) {
     const infoJson = JSON.parse(infoRes.getContentText());
     if (!infoJson.ok) return HtmlService.createHtmlOutput(`ユーザー情報取得エラー: ${infoJson.error}`);
 
-    const userEmail = infoJson.user.profile.email;
+    const userEmailRaw = infoJson.user.profile.email;
+    const userEmail = String(userEmailRaw || '').trim().toLowerCase();
     const ss = SpreadsheetApp.openById(getSpreadsheetId());
 
     // ユーザー登録チェック
     const usersSheet = ss.getSheetByName(SHEET_USERS);
     const userData = usersSheet.getDataRange().getValues();
-    const userExists = userData.some(r => r[COL.EMAIL] === userEmail);
+    const userExists = userData.some((r, i) => i > 0 && String(r[COL.EMAIL] || '').trim().toLowerCase() === userEmail);
 
     if (!userExists) return HtmlService.createHtmlOutput(`<h2 style="color:red; text-align:center;">未登録ユーザー (${userEmail})</h2>`);
 
-    // Tokensシートに保存
-    const tokensSheet = ss.getSheetByName(SHEET_TOKENS);
+    // セッションとトークンを別々に保存
     const newSessionToken = Utilities.getUuid();
-    const timestamp = new Date();
+    const now = Date.now();
+    const sessions = _loadStore(SESSIONS_PROP_KEY);
+    sessions[newSessionToken] = { email: userEmail, created: now };
+    _saveStore(SESSIONS_PROP_KEY, sessions);
 
-    tokensSheet.appendRow([newSessionToken, userEmail, userSlackToken, timestamp]);
+    const tokensByEmail = _loadStore(TOKENS_BY_EMAIL_PROP_KEY);
+    tokensByEmail[userEmail] = { slackToken: userSlackToken, created: now };
+    _saveStore(TOKENS_BY_EMAIL_PROP_KEY, tokensByEmail);
 
     return HtmlService.createHtmlOutput(`
     <html>
@@ -508,7 +640,7 @@ function handleSlackCallback(code) {
       <body>
         <div class="container">
           <h2>連携完了</h2>
-          <p>認証が完了しました。自動的にリダイレクトしています...</p>
+          <p>認証が完了しました。ツールへ戻るをクリックしてください。</p>
           <button id="toolButton" onclick="redirectToTool()">ツールへ戻る</button>
           <script>
             const sessionToken = '${newSessionToken}';
@@ -551,26 +683,25 @@ function handleSlackCallback(code) {
  * 3. 共通機能 (Token取得ロジック - Tokensシートから取得)
  * -------------------------------------------------------------------------- */
 function getUserToken(sessionToken) {
-  const ss = SpreadsheetApp.openById(getSpreadsheetId());
-  const tokensSheet = ss.getSheetByName(SHEET_TOKENS);
-  const data = tokensSheet.getDataRange().getValues();
+  const sessions = _loadStore(SESSIONS_PROP_KEY);
+  const entry = sessions[sessionToken];
+  if (!entry) throw new Error("セッションが無効です");
 
-  // 最新の状態を確認するため再検索
-  const tokenRow = data.find(r => r[COL_TOKENS.SESSION_ID] === sessionToken);
-
-  if (!tokenRow) throw new Error("セッションが無効です");
-
-  // 有効期限チェック
-  const createdAt = new Date(tokenRow[COL_TOKENS.CREATED_AT]);
-  const now = new Date();
-  if ((now - createdAt) / (1000 * 60 * 60 * 24) > SESSION_DURATION_DAYS) {
+  const now = Date.now();
+  const created = entry.created || 0;
+  if ((now - created) / (1000 * 60 * 60 * 24) > SESSION_DURATION_DAYS) {
+    // expired: remove and save
+    delete sessions[sessionToken];
+    _saveStore(SESSIONS_PROP_KEY, sessions);
     throw new Error("セッション期限切れ");
   }
 
-  const slackToken = tokenRow[COL_TOKENS.SLACK_TOKEN];
-  if (!slackToken) throw new Error("Slack連携(Token)がありません。PCからSlackログインを行うか、管理者に連絡してください。");
+  const email = entry.email;
+  const tokensByEmail = _loadStore(TOKENS_BY_EMAIL_PROP_KEY);
+  const tokenEntry = tokensByEmail[email];
+  if (!tokenEntry || !tokenEntry.slackToken) throw new Error("Slack連携(Token)がありません。PCからSlackログインを行うか、管理者に連絡してください。");
 
-  return { token: slackToken, email: tokenRow[COL_TOKENS.EMAIL] };
+  return { token: tokenEntry.slackToken, email: email };
 }
 
 function getSlackID(token, email) {
@@ -598,11 +729,11 @@ function getUserProfile(sessionToken, targetEmail) {
   const data = sheet.getDataRange().getValues();
 
   // 管理者判定はログインユーザーの Users 行の Z 列 (COL.ADMIN)
-  const loginRow = data.find(r => r[COL.EMAIL] === login.user.email);
+  const loginRow = data.find(r => String(r[COL.EMAIL] || '').trim().toLowerCase() === String(login.user.email).trim().toLowerCase());
   const isAdmin = loginRow && (loginRow[COL.ADMIN] === 'TRUE' || loginRow[COL.ADMIN] === true);
 
   const emailToFetch = (targetEmail && isAdmin) ? targetEmail : login.user.email;
-  const row = data.find(r => r[COL.EMAIL] === emailToFetch);
+  const row = data.find(r => String(r[COL.EMAIL] || '').trim().toLowerCase() === String(emailToFetch).trim().toLowerCase());
   if (!row) throw new Error("データが見つかりません");
 
   const birthdayVal = row[COL.BIRTHDAY] instanceof Date ? Utilities.formatDate(row[COL.BIRTHDAY], Session.getScriptTimeZone(), 'yyyy-MM-dd') : (row[COL.BIRTHDAY] || '');
@@ -687,9 +818,36 @@ function updateUserProfile(sessionToken, formData, targetEmail) {
 
   sheet.getRange(rowIndex, COL.ALMA_MATER + 1).setValue(formData.almaMater || '');
   sheet.getRange(rowIndex, COL.CAR_OWNER + 1).setValue(formData.carOwner ? true : false);
-  // 在籍・次年度継続フラグ
-  if (typeof formData.retired !== 'undefined') sheet.getRange(rowIndex, COL.RETIRED + 1).setValue(formData.retired ? true : false);
-  if (typeof formData.continueNext !== 'undefined') sheet.getRange(rowIndex, COL.CONTINUE_NEXT + 1).setValue(formData.continueNext ? true : false);
+  // 在籍(退局)フラグ: 管理者は他ユーザーの退局フラグを変更可能
+  if (typeof formData.retired !== 'undefined') {
+    const currentValRet = sheet.getRange(rowIndex, COL.RETIRED + 1).getValue();
+    const currentBoolRet = (currentValRet === true || currentValRet === 'TRUE');
+    const requestedRet = !!formData.retired;
+
+    // 他ユーザーの退局変更は管理者のみ
+    if (String(emailToSave).trim().toLowerCase() !== String(login.user.email).trim().toLowerCase() && !isAdmin) {
+      throw new Error('退局フラグを変更する権限がありません');
+    }
+
+    // 非管理者は在籍(false) -> 退局(true) のみ許可（退局->在籍は不可）
+    if (!isAdmin) {
+      if (currentBoolRet === true && requestedRet === false) throw new Error('退局から復帰する権限はありません');
+    }
+
+    sheet.getRange(rowIndex, COL.RETIRED + 1).setValue(requestedRet ? true : false);
+  }
+
+  // 次年度継続スイッチの制御: 常にデータは保存するが、UIの操作は制限される可能性がある
+  if (typeof formData.continueNext !== 'undefined') {
+    const currentVal = sheet.getRange(rowIndex, COL.CONTINUE_NEXT + 1).getValue();
+    const currentBool = (currentVal === true || currentVal === 'TRUE');
+    const requested = !!formData.continueNext;
+    if (!isAdmin) {
+      // 非管理者は OFF -> ON のみ許可（ON->OFF は不可）
+      if (currentBool === true && requested === false) throw new Error('次年度継続を取り消す権限はありません');
+    }
+    sheet.getRange(rowIndex, COL.CONTINUE_NEXT + 1).setValue(requested ? true : false);
+  }
 
   // 所属情報 (5セット)
   if (formData.orgs && Array.isArray(formData.orgs)) {
@@ -746,7 +904,7 @@ function createUser(sessionToken, userObj) {
 
   // 管理者判定
   const allUsers = usersSheet.getDataRange().getValues();
-  const loginRow = allUsers.find(r => r[COL.EMAIL] === login.user.email);
+  const loginRow = allUsers.find(r => String(r[COL.EMAIL] || '').trim().toLowerCase() === String(login.user.email).trim().toLowerCase());
   const isAdmin = loginRow && (loginRow[COL.ADMIN] === 'TRUE' || loginRow[COL.ADMIN] === true);
   if (!isAdmin) throw new Error('権限がありません');
 
@@ -1156,7 +1314,7 @@ function createRosterSpreadsheet(sessionToken, selectedFields, folderId, filenam
 
     // 管理者判定
     const usersData = usersSheet.getDataRange().getValues();
-    const loginRow = usersData.find(r => r[COL.EMAIL] === login.user.email);
+    const loginRow = usersData.find(r => String(r[COL.EMAIL] || '').trim().toLowerCase() === String(login.user.email).trim().toLowerCase());
     const isAdmin = loginRow && (loginRow[COL.ADMIN] === 'TRUE' || loginRow[COL.ADMIN] === true);
 
     // no special "すべての項目" handling anymore
@@ -1288,7 +1446,7 @@ function createRosterCsv(sessionToken, params) {
 
     // 管理者判定
     const usersData = usersSheet.getDataRange().getValues();
-    const loginRow = usersData.find(r => r[COL.EMAIL] === login.user.email);
+    const loginRow = usersData.find(r => String(r[COL.EMAIL] || '').trim().toLowerCase() === String(login.user.email).trim().toLowerCase());
     const isAdmin = loginRow && (loginRow[COL.ADMIN] === 'TRUE' || loginRow[COL.ADMIN] === true);
 
     // no special "すべての項目" handling
@@ -1346,35 +1504,25 @@ function createRosterCsv(sessionToken, params) {
     if ((statusFilter === 'retired' || statusFilter === 'all') && !isAdmin) {
       throw new Error('退局者または全員の出力は管理者のみ可能です');
     }
-    const outRows = [];
+    // Build filtered list of data rows first, then sort according to Options ordering
+    const filteredRows = [];
     for (let i = 1; i < usersData.length; i++) {
       const row = usersData[i];
       if (!row[COL.EMAIL]) continue;
-
-      // 学年・分野フィルタ
-      if (filter && filter.grade) {
-        if ((row[COL.GRADE] || '') !== String(filter.grade)) continue;
-      }
-      if (filter && filter.field) {
-        if ((row[COL.FIELD] || '') !== String(filter.field)) continue;
-      }
+      if (filter && filter.grade) { if ((row[COL.GRADE] || '') !== String(filter.grade)) continue; }
+      if (filter && filter.field) { if ((row[COL.FIELD] || '') !== String(filter.field)) continue; }
 
       let include = false;
-      // status check: RETIRED true means 退局
       if (statusFilter === 'all') include = true;
-      else if (statusFilter === 'active') {
-        if (!(row[COL.RETIRED] === true || row[COL.RETIRED] === 'TRUE')) include = true;
-      } else if (statusFilter === 'retired') {
-        if (row[COL.RETIRED] === true || row[COL.RETIRED] === 'TRUE') include = true;
-      }
+      else if (statusFilter === 'active') { if (!(row[COL.RETIRED] === true || row[COL.RETIRED] === 'TRUE')) include = true; }
+      else if (statusFilter === 'retired') { if (row[COL.RETIRED] === true || row[COL.RETIRED] === 'TRUE') include = true; }
       if (!include) continue;
 
-      // org-based filtering continues
       if (!filter || filter.type === 'all') {
-        // already included by status/grade/field
+        // ok
       } else if (filter.type === 'orgs' && Array.isArray(filter.selections) && filter.selections.length > 0) {
-        // orgMatchMode: 'mainOnly' or 'allAffiliations'
         const mode = filter.orgMatchMode === 'mainOnly' ? 'mainOnly' : 'allAffiliations';
+        let matched = false;
         for (const sel of filter.selections) {
           const targetOrg = sel.org;
           const targetDept = sel.dept || '';
@@ -1382,27 +1530,81 @@ function createRosterCsv(sessionToken, params) {
             const org1 = row[COL.ORG_START];
             const dept1 = row[COL.ORG_START + 1];
             if (targetOrg && org1 === targetOrg) {
-              if (!targetDept || dept1 === targetDept) { include = true; break; }
+              if (!targetDept || dept1 === targetDept) { matched = true; break; }
             }
           } else {
-            // any affiliation match
             for (let k = 0; k < 5; k++) {
               const o = row[COL.ORG_START + k * 3];
               const d = row[COL.ORG_START + k * 3 + 1];
               if (o && o === targetOrg) {
-                if (!targetDept || d === targetDept) { include = true; break; }
+                if (!targetDept || d === targetDept) { matched = true; break; }
               }
             }
-            if (include) break;
+            if (matched) break;
+          }
+        }
+        if (!matched) continue;
+      }
+      filteredRows.push(row);
+    }
+
+    // Load Options ordering for sorting
+    let gradeOrder = [];
+    let fieldOrder = [];
+    let orgOrder = [];
+    const deptMap = {}; // { orgName: [dept1, dept2...] }
+    try {
+      const optSheet = ss.getSheetByName(SHEET_OPTIONS);
+      if (optSheet) {
+        const odata = optSheet.getDataRange().getValues();
+        for (let i = 1; i < odata.length; i++) {
+          const r = odata[i] || [];
+          const g = String(r[0] || '').trim(); if (g && gradeOrder.indexOf(g) === -1) gradeOrder.push(g);
+          const f = String(r[1] || '').trim(); if (f && fieldOrder.indexOf(f) === -1) fieldOrder.push(f);
+          const org = String(r[3] || '').trim(); if (org && orgOrder.indexOf(org) === -1) orgOrder.push(org);
+          const deptOrg = String(r[4] || '').trim(); const deptName = String(r[5] || '').trim();
+          if (deptOrg && deptName) {
+            if (!deptMap[deptOrg]) deptMap[deptOrg] = [];
+            if (deptMap[deptOrg].indexOf(deptName) === -1) deptMap[deptOrg].push(deptName);
           }
         }
       }
+    } catch (e) { /* ignore */ }
 
-      // include determined by above checks
+    const idxIn = (arr, v) => { if (!arr || !arr.length) return -1; if (!v) return arr.length + 1; const i = arr.indexOf(String(v)); return i === -1 ? arr.length : i; };
 
-      const outRow = indices.map(ci => row[ci] === undefined || row[ci] === null ? '' : row[ci]);
-      outRows.push(outRow);
-    }
+    filteredRows.sort((A, B) => {
+      // org1
+      const aOrg = String(A[COL.ORG_START] || '');
+      const bOrg = String(B[COL.ORG_START] || '');
+      const ai = idxIn(orgOrder, aOrg);
+      const bi = idxIn(orgOrder, bOrg);
+      if (ai !== bi) return ai - bi;
+      // dept1
+      const aDept = String(A[COL.ORG_START + 1] || '');
+      const bDept = String(B[COL.ORG_START + 1] || '');
+      const deptList = deptMap[aOrg] || [];
+      const adi = deptList.indexOf(aDept); const bdi = deptList.indexOf(bDept);
+      if (adi !== bdi) return (adi === -1 ? 1 : adi) - (bdi === -1 ? 1 : bdi);
+      // grade
+      const aGrade = String(A[COL.GRADE] || '');
+      const bGrade = String(B[COL.GRADE] || '');
+      const agi = idxIn(gradeOrder, aGrade);
+      const bgi = idxIn(gradeOrder, bGrade);
+      if (agi !== bgi) return agi - bgi;
+      // field
+      const aField = String(A[COL.FIELD] || '');
+      const bField = String(B[COL.FIELD] || '');
+      const afi = idxIn(fieldOrder, aField);
+      const bfi = idxIn(fieldOrder, bField);
+      if (afi !== bfi) return afi - bfi;
+      // fallback: name jp
+      const an = String(A[COL.NAME_JP] || '').toLowerCase();
+      const bn = String(B[COL.NAME_JP] || '').toLowerCase();
+      if (an < bn) return -1; if (an > bn) return 1; return 0;
+    });
+
+    const outRows = filteredRows.map(row => indices.map(ci => row[ci] === undefined || row[ci] === null ? '' : row[ci]));
 
     // CSV 生成（Excelの文字化け対策: UTF-8 BOM を先頭に付与）
     const escape = (v) => {
@@ -1433,13 +1635,76 @@ function createRosterCsv(sessionToken, params) {
       return cell === undefined || cell === null ? '' : cell;
     }));
 
+    // optionally append selected survey responses to the right of roster (join by email)
+    let surveyAppendHeaders = [];
+    let surveyByEmail = {};
+    if (params && params.surveyRef) {
+      try {
+        const sid = _extractSpreadsheetId(params.surveyRef) || String(params.surveyRef);
+        if (sid) {
+          try {
+            const targetSs = SpreadsheetApp.openById(sid);
+            const surveyTitle = targetSs.getName();
+            const sSh = targetSs.getSheets()[0];
+            const sLastCol = Math.max(1, sSh.getLastColumn());
+            const sHeaderRow = _detectHeaderRow(sSh, sLastCol);
+            const surveyHeadersRaw = sSh.getRange(sHeaderRow, 1, 1, sLastCol).getValues()[0] || [];
+            const emailIdx = _findHeaderIndex(surveyHeadersRaw, ['メール', 'メールアドレス', '^email$','^e-mail$']);
+            const timeIdx = _findHeaderIndex(surveyHeadersRaw, ['タイムスタンプ','Timestamp','回答日時','回答日','日時']);
+            const appendIdxs = [];
+            for (let i = 0; i < surveyHeadersRaw.length; i++) {
+              if (i === emailIdx || i === timeIdx) continue;
+              appendIdxs.push(i);
+            }
+            if (emailIdx >= 0 && appendIdxs.length > 0) {
+              surveyAppendHeaders = appendIdxs.map(i => {
+                const h = String(surveyHeadersRaw[i] || '').trim() || ('col' + (i + 1));
+                return (surveyTitle ? (surveyTitle + ' - ' + h) : h);
+              });
+
+              const sDataCount = Math.max(0, sSh.getLastRow() - sHeaderRow);
+              const sData = (sDataCount > 0) ? sSh.getRange(sHeaderRow + 1, 1, sDataCount, sLastCol).getValues() : [];
+              sData.forEach(r => {
+                const email = String(r[emailIdx] || '').trim().toLowerCase();
+                if (!email) return;
+                let ts = 0;
+                if (timeIdx >= 0) {
+                  const t = r[timeIdx];
+                  if (t instanceof Date) ts = t.getTime();
+                  else {
+                    const tt = Date.parse(String(t || ''));
+                    if (!isNaN(tt)) ts = tt;
+                  }
+                }
+                const values = appendIdxs.map(i => _safeValueForClient(r[i]));
+                if (!surveyByEmail[email] || ts >= surveyByEmail[email].ts) {
+                  surveyByEmail[email] = { ts: ts, values: values };
+                }
+              });
+            }
+          } catch (e) {
+            // ignore survey append errors
+          }
+        }
+      } catch (e) { /* ignore */ }
+    }
+
+    const finalHeaders = headersOut.concat(surveyAppendHeaders);
+    const finalRows = formattedOutRows.map((r, i) => {
+      if (!surveyAppendHeaders.length) return r;
+      const email = String(filteredRows[i][COL.EMAIL] || '').trim().toLowerCase();
+      const extra = surveyByEmail[email] ? surveyByEmail[email].values : new Array(surveyAppendHeaders.length).fill('');
+      return r.concat(extra);
+    });
+
     const rows = [];
-    rows.push(headersOut.map(escape).join(','));
-    formattedOutRows.forEach(r => rows.push(r.map(escape).join(',')));
+    rows.push(finalHeaders.map(escape).join(','));
+    finalRows.forEach(r => rows.push(r.map(escape).join(',')));
+
     const body = rows.join('\r\n');
 
     // Prepare matrix for spreadsheet export (ensure consistent column count)
-    const matrix = [headersOut].concat(formattedOutRows.map(r => r.map(c => c === undefined || c === null ? '' : c)));
+    const matrix = [finalHeaders].concat(finalRows.map(r => r.map(c => c === undefined || c === null ? '' : c)));
 
     // ファイル名: クライアントが指定すればそれを優先、なければサーバ側の Tokyo 時刻で生成
     const ts = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyyMMddHHmmss');
@@ -1452,7 +1717,7 @@ function createRosterCsv(sessionToken, params) {
       const sh = tempSs.getSheets()[0];
       // ensure dimensions
       const numRows = matrix.length;
-      const numCols = headersOut.length || 1;
+      const numCols = finalHeaders.length || 1;
       // pad rows to numCols
       const norm = matrix.map(r => {
         const nr = r.slice();
@@ -1484,4 +1749,537 @@ function createRosterCsv(sessionToken, params) {
   } catch (e) {
     return { success: false, message: e.toString() };
   }
+}
+
+/* --------------------------------------------------------------------------
+ * 8. アンケート（Google Form 回答）表示機能
+ * - スプレッドシート内の各シートを走査し、以下のいずれかでアンケートシートと判定する
+ *   1) A1 に URL が含まれる
+ *   2) ヘッダにメールアドレス(メール|Email) とタイムスタンプ(Timestamp|回答日等)が含まれる
+ * - listSurveys(): アンケート一覧（タイトル、最新スコア、最新回答日）を返す
+ * - getSurveyDetails(sheetName): 指定シートの全回答・最新回答（メールで一意化）・スコア統計を返す
+ * -------------------------------------------------------------------------- */
+
+function _isUrl(s) {
+  if (!s) return false;
+  try { return /https?:\/\//i.test(String(s)); } catch (e) { return false; }
+}
+
+function _extractSpreadsheetId(urlOrId) {
+  if (!urlOrId) return null;
+  const s = String(urlOrId).trim();
+  // direct id
+  const direct = s.match(/^[-\w]{25,}$/);
+  if (direct) return direct[0];
+  // url
+  const m = s.match(/\/d\/([a-zA-Z0-9-_]+)\//);
+  if (m && m[1]) return m[1];
+  const m2 = s.match(/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  if (m2 && m2[1]) return m2[1];
+  return null;
+}
+
+function _findHeaderIndex(headers, patterns) {
+  if (!headers || !headers.length) return -1;
+  for (let i = 0; i < headers.length; i++) {
+    const h = String(headers[i] || '').trim();
+    for (let p of patterns) {
+      const re = new RegExp(p, 'i');
+      if (re.test(h)) return i;
+    }
+  }
+  return -1;
+}
+
+// Try to detect which row contains the header (search first few rows for common header patterns)
+function _detectHeaderRow(sheet, lastCol) {
+  try {
+    const maxLook = Math.min(5, Math.max(1, sheet.getLastRow()));
+    for (let r = 1; r <= maxLook; r++) {
+      const rowVals = sheet.getRange(r, 1, 1, lastCol).getValues()[0] || [];
+      const emailIdx = _findHeaderIndex(rowVals, ['メール', 'メールアドレス', '^email$','^e-mail$']);
+      const timeIdx = _findHeaderIndex(rowVals, ['タイムスタンプ','Timestamp','回答日時','回答日','日時']);
+      if (emailIdx >= 0 || timeIdx >= 0) return r;
+    }
+  } catch (e) {
+    // ignore and fallback to 1
+  }
+  return 1;
+}
+
+function _safeValueForClient(v) {
+  if (v === null || typeof v === 'undefined') return '';
+  if (Object.prototype.toString.call(v) === '[object Date]' || v instanceof Date) {
+    try {
+      return Utilities.formatDate(new Date(v), Session.getScriptTimeZone(), 'yyyy/MM/dd HH:mm:ss');
+    } catch (e) {
+      return String(v);
+    }
+  }
+  if (typeof v === 'number' || typeof v === 'boolean') return v;
+  return String(v);
+}
+
+function listSurveys(sessionToken) {
+  try {
+    const ssMainLog = SpreadsheetApp.openById(getSpreadsheetId());
+    const sheetLogs = ssMainLog.getSheetByName(SHEET_LOGS) || ssMainLog.insertSheet(SHEET_LOGS);
+    sheetLogs.appendRow([new Date(), 'listSurveys', sessionToken || '', 'start', '']);
+  } catch (e) {
+    // ignore logging failure
+  }
+  const login = getLoginUser(sessionToken);
+  // require login for viewing details (we need an identity to check user's response)
+  if (!login || login.status !== 'authorized') {
+    return { success: false, message: '参照するにはログインが必要です。ログインしてください。' };
+  }
+  const userEmail = (login && login.user) ? String(login.user.email || '').trim().toLowerCase() : '';
+  // try to get student id from Users sheet if available
+  let userStudentId = null;
+  try {
+    if (userEmail) {
+      const ssMain = SpreadsheetApp.openById(getSpreadsheetId());
+      const usersSheet = ssMain.getSheetByName(SHEET_USERS);
+      if (usersSheet) {
+        const data = usersSheet.getDataRange().getValues();
+        for (let i = 1; i < data.length; i++) {
+          const row = data[i];
+          if (String(row[COL.EMAIL] || '').trim().toLowerCase() === userEmail) { userStudentId = String(row[COL.STUDENT_ID] || '').trim(); break; }
+        }
+      }
+    }
+  } catch (e) { /* ignore */ }
+
+  const ss = SpreadsheetApp.openById(getSpreadsheetId());
+  const formsSheet = ss.getSheetByName(SHEET_FORMS);
+  const out = [];
+  if (!formsSheet) return out;
+  const lastRow = formsSheet.getLastRow();
+  if (lastRow < 2) return out;
+  const cols = Math.max(3, HEADER_FORMS.length);
+  const rows = formsSheet.getRange(2,1,Math.max(0,lastRow-1), cols).getValues();
+  rows.forEach((r, idx) => {
+    try {
+      const spreadRef = String(r[0] || '').trim();
+      const formUrl = String(r[1] || '').trim();
+      const title = String(r[2] || '').trim() || spreadRef;
+      const inChargeOrg = String(r[3] || '').trim() || '';
+      const inChargeDept = String(r[4] || '').trim() || '';
+      const collectingRaw = r[5];
+      const collecting = (collectingRaw === true) || (String(collectingRaw || '').toLowerCase() === 'true');
+      const scoreName = String(r[6] || '').trim() || null;
+      const scoreUnit = String(r[7] || '').trim() || null;
+      const sid = _extractSpreadsheetId(spreadRef) || _extractSpreadsheetId(formUrl);
+      if (!sid) {
+        out.push({ title: title, spreadsheetId: null, spreadsheetUrl: null, formUrl: formUrl || null, inChargeOrg: inChargeOrg, inChargeDept: inChargeDept, collecting: collecting, scoreName: scoreName, scoreUnit: scoreUnit, userLatestRowIndex: null, available: false, latestResponseDate: null, latestScore: null });
+        return;
+      }
+      // Determine whether the current user has a response in this survey sheet
+      let available = false;
+      let latestResponseDate = null;
+      let latestScore = null;
+      let userLatestRowIndex = null;
+      try {
+        const targetSs = SpreadsheetApp.openById(sid);
+        const sSh = targetSs.getSheets()[0];
+        const sLastCol = Math.max(1, sSh.getLastColumn());
+        const sHeaderRow = _detectHeaderRow(sSh, sLastCol);
+        const headers = sSh.getRange(sHeaderRow, 1, 1, sLastCol).getValues()[0] || [];
+        const timeIdx = _findHeaderIndex(headers, ['タイムスタンプ','Timestamp','回答日時','回答日','日時']);
+        const emailIdx = _findHeaderIndex(headers, ['メール', 'メールアドレス', '^email$','^e-mail$']);
+        const sidIdx = _findHeaderIndex(headers, ['学籍番号', 'student id', 'studentid', '学籍']);
+        const scoreIdx = _findHeaderIndex(headers, ['スコア','Score','合計','点数']);
+
+        const dataStart = sHeaderRow + 1;
+        const dataCount = Math.max(0, sSh.getLastRow() - sHeaderRow);
+        if (dataCount > 0 && (emailIdx >= 0 || sidIdx >= 0)) {
+          const data = sSh.getRange(dataStart, 1, dataCount, sLastCol).getValues();
+          let latestTs = -1;
+          for (let i = 0; i < data.length; i++) {
+            const row = data[i] || [];
+            const rowEmail = (emailIdx >= 0) ? String(row[emailIdx] || '').trim().toLowerCase() : '';
+            const rowSid = (sidIdx >= 0) ? String(row[sidIdx] || '').trim() : '';
+            const emailMatch = userEmail && rowEmail && rowEmail === userEmail;
+            const sidMatch = userStudentId && rowSid && rowSid === userStudentId;
+            if (!emailMatch && !sidMatch) continue;
+
+            let ts = i; // fallback when timestamp column is missing or invalid
+            if (timeIdx >= 0) {
+              const t = row[timeIdx];
+              if (t instanceof Date) ts = t.getTime();
+              else {
+                const tt = Date.parse(String(t || ''));
+                if (!isNaN(tt)) ts = tt;
+              }
+            }
+            if (ts >= latestTs) {
+              latestTs = ts;
+              available = true;
+              latestResponseDate = ts;
+              latestScore = (scoreIdx >= 0) ? row[scoreIdx] : null;
+              userLatestRowIndex = dataStart + i;
+            }
+          }
+        }
+      } catch (e) {
+        // ignore per-sheet failures
+      }
+      // Performance improvement: avoid opening each spreadsheet synchronously.
+      // Instead, fetch Drive file metadata (modifiedDate) and return lightweight info.
+      let latestDate = null;
+      try {
+        // Try Advanced Drive API first (faster for metadata)
+        try {
+          const meta = Drive.Files.get(sid, { fields: 'modifiedDate' });
+          if (meta && meta.modifiedDate) latestDate = (new Date(meta.modifiedDate)).getTime();
+        } catch (e) {
+          // Fallback to DriveApp
+          try { const f = DriveApp.getFileById(sid); if (f && f.getLastUpdated) latestDate = f.getLastUpdated().getTime(); } catch (ee) { /* ignore */ }
+        }
+      } catch (e) {
+        // ignore
+      }
+      const spreadsheetUrl = (spreadRef && String(spreadRef).indexOf('http')===0) ? spreadRef : ('https://docs.google.com/spreadsheets/d/' + sid + '/edit');
+      const latestScoreFormatted = (latestScore !== null && latestScore !== undefined) ? (Number(latestScore).toLocaleString() + (scoreUnit ? (' ' + scoreUnit) : '')) : null;
+      out.push({
+        title: title,
+        spreadsheetId: sid,
+        spreadsheetUrl: spreadsheetUrl,
+        formUrl: formUrl || null,
+        inChargeOrg: inChargeOrg,
+        inChargeDept: inChargeDept,
+        collecting: collecting,
+        scoreName: scoreName,
+        scoreUnit: scoreUnit,
+        userLatestRowIndex: userLatestRowIndex,
+        available: available,
+        latestResponseDate: available ? latestResponseDate : (latestDate || null),
+        latestScore: available ? latestScore : null,
+        latestScoreFormatted: available ? latestScoreFormatted : null
+      });
+    } catch (e) { out.push({ title: String(r[2]||r[0]||''), spreadsheetId: null, spreadsheetUrl: null, userLatestRowIndex: null, available: false, latestResponseDate: null, latestScore: null }); }
+  });
+  // sort by latestResponseDate desc
+  out.sort((a,b) => (b.latestResponseDate || 0) - (a.latestResponseDate || 0));
+  try {
+    // sort by latestResponseDate desc
+    out.sort((a,b) => (b.latestResponseDate || 0) - (a.latestResponseDate || 0));
+    try {
+      const ssMainLog2 = SpreadsheetApp.openById(getSpreadsheetId());
+      const sheetLogs2 = ssMainLog2.getSheetByName(SHEET_LOGS) || ssMainLog2.insertSheet(SHEET_LOGS);
+      sheetLogs2.appendRow([new Date(), 'listSurveys', sessionToken || '', 'end', JSON.stringify({ count: out.length })]);
+    } catch (e) {}
+    return out;
+  } catch (e) {
+    try {
+      const ssMainLog3 = SpreadsheetApp.openById(getSpreadsheetId());
+      const sheetLogs3 = ssMainLog3.getSheetByName(SHEET_LOGS) || ssMainLog3.insertSheet(SHEET_LOGS);
+      sheetLogs3.appendRow([new Date(), 'listSurveys', sessionToken || '', 'error', String(e)]);
+    } catch (ee) {}
+    return out;
+  }
+}
+
+function listFormDefinitions(sessionToken) {
+  try {
+    const login = getLoginUser(sessionToken);
+    if (!login || login.status !== 'authorized') throw new Error('認証されていません');
+    const ss = SpreadsheetApp.openById(getSpreadsheetId());
+    const formsSheet = ss.getSheetByName(SHEET_FORMS);
+    if (!formsSheet) return { success: true, items: [] };
+    const lastRow = formsSheet.getLastRow();
+    if (lastRow < 2) return { success: true, items: [] };
+    const cols = Math.max(HEADER_FORMS.length, formsSheet.getLastColumn());
+    const rows = formsSheet.getRange(2, 1, lastRow - 1, cols).getValues();
+    const items = rows.map((r, i) => {
+      const collectingRaw = r[5];
+      const collecting = (collectingRaw === true) || (String(collectingRaw || '').toLowerCase() === 'true');
+      return {
+        rowIndex: i + 2,
+        spreadsheetRef: String(r[0] || '').trim(),
+        formUrl: String(r[1] || '').trim(),
+        title: String(r[2] || '').trim(),
+        inChargeOrg: String(r[3] || '').trim(),
+        inChargeDept: String(r[4] || '').trim(),
+        collecting: collecting,
+        scoreName: String(r[6] || '').trim(),
+        scoreUnit: String(r[7] || '').trim()
+      };
+    });
+    return { success: true, items: items };
+  } catch (e) {
+    return { success: false, message: e.toString() };
+  }
+}
+
+function saveFormDefinition(sessionToken, payload) {
+  try {
+    const login = getLoginUser(sessionToken);
+    if (!login || login.status !== 'authorized') throw new Error('認証されていません');
+    const data = payload || {};
+    const spreadsheetRef = String(data.spreadsheetRef || '').trim();
+    const formUrl = String(data.formUrl || '').trim();
+    if (!spreadsheetRef && !formUrl) throw new Error('アンケートシートまたはフォームURLのどちらかを入力してください');
+    const rowIndex = Number(data.rowIndex || 0);
+    const row = new Array(HEADER_FORMS.length).fill('');
+    row[0] = spreadsheetRef;
+    row[1] = formUrl;
+    row[2] = String(data.title || '').trim();
+    row[3] = String(data.inChargeOrg || '').trim();
+    row[4] = String(data.inChargeDept || '').trim();
+    row[5] = data.collecting ? true : false;
+    row[6] = String(data.scoreName || '').trim();
+    row[7] = String(data.scoreUnit || '').trim();
+
+    const ss = SpreadsheetApp.openById(getSpreadsheetId());
+    const formsSheet = ss.getSheetByName(SHEET_FORMS) || ss.insertSheet(SHEET_FORMS);
+    // ensure header row exists
+    if (formsSheet.getLastRow() === 0) {
+      formsSheet.getRange(1, 1, 1, HEADER_FORMS.length).setValues([HEADER_FORMS]);
+    }
+
+    if (rowIndex && rowIndex >= 2) {
+      formsSheet.getRange(rowIndex, 1, 1, row.length).setValues([row]);
+    } else {
+      formsSheet.appendRow(row);
+    }
+    return { success: true };
+  } catch (e) {
+    return { success: false, message: e.toString() };
+  }
+}
+
+function getSurveyDetails(sessionToken, spreadsheetRef, rowIndex) {
+  try {
+    try {
+      const ssMainLog = SpreadsheetApp.openById(getSpreadsheetId());
+      const logs = ssMainLog.getSheetByName(SHEET_LOGS) || ssMainLog.insertSheet(SHEET_LOGS);
+      logs.appendRow([new Date(), 'getSurveyDetails', spreadsheetRef || '', 'start', String(rowIndex || '')]);
+    } catch (e) {}
+  // spreadsheetRef: spreadsheet URL or ID (from Forms.A)
+  const login = getLoginUser(sessionToken);
+  const userEmail = (login && login.user) ? String(login.user.email || '').trim().toLowerCase() : '';
+  // get user student id
+  let userStudentId = null;
+  try {
+    if (userEmail) {
+      const ssMain = SpreadsheetApp.openById(getSpreadsheetId());
+      const usersSheet = ssMain.getSheetByName(SHEET_USERS);
+      if (usersSheet) {
+        const data = usersSheet.getDataRange().getValues();
+        for (let i = 1; i < data.length; i++) {
+          const row = data[i];
+          if (String(row[COL.EMAIL] || '').trim().toLowerCase() === userEmail) { userStudentId = String(row[COL.STUDENT_ID] || '').trim(); break; }
+        }
+      }
+    }
+  } catch (e) { /* ignore */ }
+
+  const sid = _extractSpreadsheetId(spreadsheetRef);
+  if (!sid) throw new Error('無効なスプレッドシート参照です');
+  const ss = SpreadsheetApp.openById(getSpreadsheetId());
+  let targetSs;
+  try { targetSs = SpreadsheetApp.openById(sid); } catch (e) { throw new Error('対象スプレッドシートを開けません: ' + e.toString()); }
+  const sheets = targetSs.getSheets();
+  if (!sheets || sheets.length === 0) throw new Error('対象シートがありません');
+  const sh = sheets[0];
+
+  const lastCol = Math.max(1, sh.getLastColumn());
+  const headerRow = _detectHeaderRow(sh, lastCol);
+  const headers = sh.getRange(headerRow, 1, 1, lastCol).getValues()[0] || [];
+
+  const timeIdx = _findHeaderIndex(headers, ['タイムスタンプ','Timestamp','回答日時','回答日','日時']);
+  const emailIdx = _findHeaderIndex(headers, ['メール', 'メールアドレス', '^email$','^e-mail$']);
+  const sidIdx = _findHeaderIndex(headers, ['学籍番号', 'student id', 'studentid', '学籍']);
+  const scoreIdx = _findHeaderIndex(headers, ['スコア','Score','合計','点数']);
+
+  // If rowIndex is provided, return single response for that sheet row (sheet-row index expected)
+  if (typeof rowIndex !== 'undefined' && rowIndex !== null) {
+    const ri = Number(rowIndex);
+    if (isNaN(ri) || ri <= headerRow || ri > sh.getLastRow()) return { success: false, message: '無効な行番号です' };
+    const r = sh.getRange(ri, 1, 1, lastCol).getValues()[0] || [];
+    const obj = { answers: {}, timestamp: null, email: null, score: null, studentId: null };
+    if (timeIdx >= 0) {
+      const t = r[timeIdx];
+      if (t instanceof Date) obj.timestamp = t;
+      else if (String(t || '').trim()) { const dd = new Date(String(t)); if (!isNaN(dd.getTime())) obj.timestamp = dd; }
+    }
+    if (emailIdx >= 0) obj.email = String(r[emailIdx] || '').trim().toLowerCase();
+    if (sidIdx >= 0) obj.studentId = String(r[sidIdx] || '').trim();
+    if (scoreIdx >= 0) obj.score = r[scoreIdx];
+    for (let i = 0; i < headers.length; i++) obj.answers[headers[i] || ('col' + (i+1))] = _safeValueForClient(r[i]);
+
+    // ensure requester owns this response (email or studentId)
+    let ok = false;
+    if (userEmail && obj.email && String(obj.email).trim().toLowerCase() === userEmail) ok = true;
+    if (!ok && userStudentId && obj.studentId && String(obj.studentId).trim() === userStudentId) ok = true;
+    if (!ok) return { success: false, message: 'あなたの回答がないため参照できません' };
+
+    const conv = Object.assign({}, obj);
+    conv.timestamp = conv.timestamp ? (conv.timestamp instanceof Date ? conv.timestamp.getTime() : Number(conv.timestamp)) : null;
+    conv.score = _safeValueForClient(conv.score);
+
+    // fetch scoreName/scoreUnit from Forms sheet if available
+    let scoreName = null, scoreUnit = null;
+    try {
+      const formsSheet = ss.getSheetByName(SHEET_FORMS);
+      if (formsSheet) {
+        const cols = Math.max(3, HEADER_FORMS.length);
+        const metaRows = formsSheet.getRange(2,1,Math.max(0, formsSheet.getLastRow()-1), cols).getValues();
+        for (let i = 0; i < metaRows.length; i++) {
+          const a = String(metaRows[i][0] || '').trim();
+          const b = String(metaRows[i][1] || '').trim();
+          const fid = _extractSpreadsheetId(a) || _extractSpreadsheetId(b);
+          if (fid === sid || a === spreadsheetRef || b === spreadsheetRef) {
+            scoreName = String(metaRows[i][6] || '').trim() || null;
+            scoreUnit = String(metaRows[i][7] || '').trim() || null;
+            break;
+          }
+        }
+      }
+    } catch (e) { /* ignore */ }
+
+    conv.scoreFormatted = (conv.score !== null && conv.score !== undefined) ? (Number(conv.score).toLocaleString() + (scoreUnit ? (' ' + scoreUnit) : '')) : null;
+
+    try {
+      const ssMainLogEnd = SpreadsheetApp.openById(getSpreadsheetId());
+      const logsEnd = ssMainLogEnd.getSheetByName(SHEET_LOGS) || ssMainLogEnd.insertSheet(SHEET_LOGS);
+      logsEnd.appendRow([new Date(), 'getSurveyDetails', spreadsheetRef || '', 'end', 'rowIndex:' + ri]);
+    } catch (e) {}
+    return { success: true, sheetRef: spreadsheetRef, rowIndex: ri, headers: headers, response: conv, scoreName: scoreName, scoreUnit: scoreUnit };
+  }
+
+  // otherwise fall back to full-sheet behavior (backwards compatible)
+  const dataStart = headerRow + 1;
+  const dataCount = Math.max(0, sh.getLastRow() - headerRow);
+  const rows = (dataCount > 0) ? sh.getRange(dataStart,1,dataCount,lastCol).getValues() : [];
+
+  // parse rows
+  const parsed = rows.map(r => {
+    const obj = { answers: {}, timestamp: null, email: null, score: null, studentId: null };
+    if (timeIdx >= 0) {
+      const t = r[timeIdx];
+      if (t instanceof Date) obj.timestamp = t;
+      else if (String(t || '').trim()) { const dd = new Date(String(t)); if (!isNaN(dd.getTime())) obj.timestamp = dd; }
+    }
+    if (emailIdx >= 0) obj.email = String(r[emailIdx] || '').trim().toLowerCase();
+    if (sidIdx >= 0) obj.studentId = String(r[sidIdx] || '').trim();
+    if (scoreIdx >= 0) obj.score = r[scoreIdx];
+    for (let i = 0; i < headers.length; i++) obj.answers[headers[i] || ('col' + (i+1))] = _safeValueForClient(r[i]);
+    return obj;
+  }).filter(p => p.timestamp || p.email || Object.keys(p.answers).length > 0);
+
+  // determine whether current user has response (email first, then studentId)
+  let hasResponse = false;
+  if (userEmail) {
+    if (emailIdx >= 0) {
+      hasResponse = parsed.some(p => p.email && String(p.email).trim().toLowerCase() === userEmail);
+    }
+  }
+  if (!hasResponse && userStudentId && sidIdx >= 0) {
+    hasResponse = parsed.some(p => p.studentId && String(p.studentId).trim() === userStudentId);
+  }
+
+  if (!hasResponse) return { success: false, message: 'あなたの回答がないため参照できません' };
+
+  // sort by timestamp desc
+  parsed.sort((a,b) => {
+    const ta = a.timestamp ? (a.timestamp instanceof Date ? a.timestamp.getTime() : Number(a.timestamp)) : 0;
+    const tb = b.timestamp ? (b.timestamp instanceof Date ? b.timestamp.getTime() : Number(b.timestamp)) : 0;
+    return tb - ta;
+  });
+
+  // latest per email (メールで一意化)、fallback to studentId grouping if email missing
+  const latestByKey = {};
+  parsed.forEach(p => {
+    let key = p.email || (p.studentId ? ('sid:' + p.studentId) : ('row' + Math.random()));
+    if (!latestByKey[key] || (p.timestamp && latestByKey[key].timestamp && p.timestamp.getTime() > latestByKey[key].timestamp.getTime())) {
+      latestByKey[key] = p;
+    }
+  });
+  const latestList = Object.keys(latestByKey).map(k => latestByKey[k]);
+  latestList.sort((a,b) => (b.timestamp?b.timestamp.getTime():0) - (a.timestamp?a.timestamp.getTime():0));
+
+  const scores = parsed.map(p => (typeof p.score === 'number' ? p.score : (p.score ? Number(p.score) : null))).filter(v => v !== null && !isNaN(v));
+  const stats = { count: scores.length, min: null, max: null, avg: null, distribution: {} };
+  if (scores.length > 0) {
+    const s = scores.slice().sort((a,b)=>a-b);
+    stats.min = s[0]; stats.max = s[s.length-1]; stats.avg = s.reduce((a,b)=>a+b,0)/s.length;
+    s.forEach(v => { const k = String(v); stats.distribution[k] = (stats.distribution[k] || 0) + 1; });
+  }
+
+  // also include scoreName/scoreUnit from Forms sheet when available
+  let scoreName = null, scoreUnit = null;
+  try {
+    const formsSheet = ss.getSheetByName(SHEET_FORMS);
+    if (formsSheet) {
+      const cols = Math.max(3, HEADER_FORMS.length);
+      const metaRows = formsSheet.getRange(2,1,Math.max(0, formsSheet.getLastRow()-1), cols).getValues();
+      for (let i = 0; i < metaRows.length; i++) {
+        const a = String(metaRows[i][0] || '').trim();
+        const b = String(metaRows[i][1] || '').trim();
+        const fid = _extractSpreadsheetId(a) || _extractSpreadsheetId(b);
+        if (fid === sid || a === spreadsheetRef || b === spreadsheetRef) {
+          scoreName = String(metaRows[i][6] || '').trim() || null;
+          scoreUnit = String(metaRows[i][7] || '').trim() || null;
+          break;
+        }
+      }
+    }
+  } catch (e) { /* ignore */ }
+
+  // format stats
+  stats.minFormatted = stats.min !== null ? Number(stats.min).toLocaleString() + (scoreUnit ? (' ' + scoreUnit) : '') : null;
+  stats.maxFormatted = stats.max !== null ? Number(stats.max).toLocaleString() + (scoreUnit ? (' ' + scoreUnit) : '') : null;
+  stats.avgFormatted = stats.avg !== null ? Number(stats.avg).toLocaleString() + (scoreUnit ? (' ' + scoreUnit) : '') : null;
+  stats.distributionFormatted = {};
+  Object.keys(stats.distribution).forEach(k => {
+    const formatted = Number(k).toLocaleString() + (scoreUnit ? (' ' + scoreUnit) : '');
+    stats.distributionFormatted[formatted] = stats.distribution[k];
+  });
+
+  // convert timestamps to epoch millis for safe JSON serialization to client
+  const convParsed = parsed.map(p => {
+    const copy = Object.assign({}, p);
+    copy.timestamp = copy.timestamp ? (copy.timestamp instanceof Date ? copy.timestamp.getTime() : Number(copy.timestamp)) : null;
+    copy.scoreFormatted = (copy.score !== null && copy.score !== undefined) ? (Number(copy.score).toLocaleString() + (scoreUnit ? (' ' + scoreUnit) : '')) : null;
+    return copy;
+  });
+  const convLatest = latestList.map(p => {
+    const copy = Object.assign({}, p);
+    copy.timestamp = copy.timestamp ? (copy.timestamp instanceof Date ? copy.timestamp.getTime() : Number(copy.timestamp)) : null;
+    copy.scoreFormatted = (copy.score !== null && copy.score !== undefined) ? (Number(copy.score).toLocaleString() + (scoreUnit ? (' ' + scoreUnit) : '')) : null;
+    return copy;
+  });
+
+  try {
+    const ssMainLogEnd2 = SpreadsheetApp.openById(getSpreadsheetId());
+    const logsEnd2 = ssMainLogEnd2.getSheetByName(SHEET_LOGS) || ssMainLogEnd2.insertSheet(SHEET_LOGS);
+    logsEnd2.appendRow([new Date(), 'getSurveyDetails', spreadsheetRef || '', 'end', 'rows:' + convParsed.length]);
+  } catch (e) {}
+
+  return { success: true, sheetRef: spreadsheetRef, headers: headers, allResponses: convParsed, latestPerEmail: convLatest, scoreStats: stats, scoreName: scoreName, scoreUnit: scoreUnit };
+  } catch (e) {
+    const msg = (e && e.toString) ? e.toString() : String(e);
+    try {
+      const ss = SpreadsheetApp.openById(getSpreadsheetId());
+      const logs = ss.getSheetByName(SHEET_LOGS) || ss.insertSheet(SHEET_LOGS);
+      const time = new Date();
+      logs.appendRow([time, 'getSurveyDetails', spreadsheetRef || '', 'error', msg]);
+    } catch (ee) {
+      // ignore logging failure
+    }
+    return { success: false, message: 'サーバー処理中にエラーが発生しました: ' + msg };
+  }
+}
+
+// Try to extract Form ID from a URL like https://docs.google.com/forms/d/FORM_ID/
+function _extractFormId(formUrl) {
+  if (!formUrl) return null;
+  try {
+    // support URLs like /forms/d/ID/ and /forms/d/e/ID/
+    const m = String(formUrl).match(/\/forms\/d\/(?:e\/)?([-_0-9A-Za-z]+)/);
+    if (m && m[1]) return m[1];
+  } catch (e) {}
+  return null;
 }
