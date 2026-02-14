@@ -112,15 +112,38 @@
         };
 
         const runGas = (funcName, ...args) => {
+            const invoke = () => {
+                return new Promise((resolve, reject) => {
+                    try {
+                        google.script.run
+                            .withSuccessHandler(resolve)
+                            .withFailureHandler(reject)
+                            [funcName](...args);
+                    } catch (e) { reject(e); }
+                });
+            };
+
             return new Promise((resolve, reject) => {
-                if (typeof google !== 'undefined' && google.script) {
-                    google.script.run
-                        .withSuccessHandler(resolve)
-                        .withFailureHandler(reject)
-                        [funcName](...args);
-                } else {
-                    reject(new Error('Google Apps Script環境が必要です'));
+                if (typeof google !== 'undefined' && google && google.script) {
+                    invoke().then(resolve).catch(reject);
+                    return;
                 }
+                // poll for google.script availability (up to 5s)
+                let waited = 0;
+                const interval = 100;
+                const maxWait = 5000;
+                const id = setInterval(() => {
+                    if (typeof google !== 'undefined' && google && google.script) {
+                        clearInterval(id);
+                        invoke().then(resolve).catch(reject);
+                        return;
+                    }
+                    waited += interval;
+                    if (waited >= maxWait) {
+                        clearInterval(id);
+                        reject(new Error('Google Apps Script環境が利用できません (timeout)'));
+                    }
+                }, interval);
             });
         };
 
@@ -171,6 +194,115 @@
             );
         }
 
+        function DetailsModal({ isOpen, loading, details, onClose, survey }) {
+            if (!isOpen) return null;
+            return (
+                <div className="fixed inset-0 flex items-center justify-center modal-overlay p-4 z-[210]">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl p-4 md:p-6 overflow-auto max-h-[80vh] animate-fade-in">
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="text-lg font-bold">アンケート詳細</h3>
+                            <div className="flex items-center gap-2">
+                                {(() => {
+                                    const url = survey && String(survey.formUrl || '').trim();
+                                    const collecting = (() => {
+                                        if (!survey) return false;
+                                        if (survey.collecting === true) return true;
+                                        const sval = String(survey.collecting || '').trim().toLowerCase();
+                                        if (sval === 'true' || sval === '1') return true;
+                                        if (typeof survey.collecting === 'number' && Number(survey.collecting) === 1) return true;
+                                        return false;
+                                    })();
+                                    if (url && collecting) {
+                                        return (<button onClick={() => { try { window.open(url, '_blank', 'noopener'); } catch (e) { alert('リンクを開けませんでした'); } }} className="text-sm bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700">フォームを開く</button>);
+                                    }
+                                    return (<button disabled className="text-sm bg-gray-100 text-gray-400 px-3 py-1 rounded cursor-not-allowed">フォームを開く</button>);
+                                })()}
+                                <button onClick={onClose} className="text-sm text-gray-500 hover:text-gray-700">閉じる</button>
+                            </div>
+                        </div>
+
+                        {/* Details only; dropdown removed to avoid referencing outer scope variables */}
+                        {loading ? (
+                            <div className="flex flex-col items-center justify-center py-8"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div><div className="text-sm text-gray-600">読み込み中...</div></div>
+                        ) : (
+                            <>
+                            <div className="space-y-4 text-sm text-gray-800">
+                                {details && details.error && (<div className="text-red-600">{details.error}</div>)}
+                                {details && details.response && (
+                                    <div>
+                                        <div className="font-medium mb-2">あなたの回答</div>
+                                        <div className="text-xs text-gray-500 mb-2">
+                                            回答日時: {details.response.timestamp ? new Date(details.response.timestamp).toLocaleString('ja-JP') : '-'} / {details.scoreName ? details.scoreName : 'スコア'}: {details.response.scoreFormatted ? details.response.scoreFormatted : (details.response.score !== null && typeof details.response.score !== 'undefined' ? String(details.response.score) + (details.scoreUnit ? (' ' + details.scoreUnit) : '') : '-')}
+                                        </div>
+                                        <div className="overflow-auto max-h-64 border rounded">
+                                            <table className="min-w-full text-sm">
+                                                <thead className="bg-gray-100">
+                                                    <tr>
+                                                        <th className="px-2 py-1 text-left">項目</th>
+                                                        <th className="px-2 py-1 text-left">回答</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {(details.headers && details.headers.length ? details.headers : Object.keys(details.response.answers || {})).map((h, idx) => {
+                                                            const key = h || `col${idx+1}`;
+                                                            const val = details.response.answers ? details.response.answers[key] : '';
+                                                            const scoreKeys = ['スコア','Score','合計','点数'];
+                                                            const isScore = scoreKeys.includes((h || '').toString());
+                                                            const displayKey = (isScore && details.scoreName) ? details.scoreName : key;
+                                                            let displayVal = '';
+                                                            if (isScore) {
+                                                                if (details.response && (details.response.scoreFormatted || (details.response.score !== null && typeof details.response.score !== 'undefined'))) {
+                                                                    displayVal = details.response.scoreFormatted ? details.response.scoreFormatted : String(details.response.score) + (details.scoreUnit ? (' ' + details.scoreUnit) : '');
+                                                                } else {
+                                                                    displayVal = val === null || typeof val === 'undefined' ? '' : String(val);
+                                                                }
+                                                            } else {
+                                                                displayVal = val === null || typeof val === 'undefined' ? '' : String(val);
+                                                            }
+                                                            return (
+                                                            <tr key={idx} className={`${idx%2===0?'bg-white':'bg-gray-50'}`}>
+                                                                <td className="px-2 py-1 border-t">{displayKey}</td>
+                                                                <td className="px-2 py-1 border-t">{displayVal}</td>
+                                                            </tr>
+                                                            );
+                                                        })}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {details && details.latestPerEmail && (
+                                    <div>
+                                        <div className="font-medium mb-2">最新の回答（メール毎）</div>
+                                        <div className="overflow-auto max-h-48 border rounded">
+                                            <table className="min-w-full text-sm"><thead className="bg-gray-100"><tr><th className="px-2 py-1 text-left">メール</th><th className="px-2 py-1 text-left">回答日時</th><th className="px-2 py-1 text-left">{details && details.scoreName ? details.scoreName : 'スコア'}</th></tr></thead>
+                                            <tbody>{details.latestPerEmail.map((r,ri)=>(<tr key={ri} className={`${ri%2===0?'bg-white':'bg-gray-50'}`}><td className="px-2 py-1 border-t">{r.email||'-'}</td><td className="px-2 py-1 border-t">{r.timestamp? new Date(r.timestamp).toLocaleString('ja-JP') : '-'}</td><td className="px-2 py-1 border-t">{r.scoreFormatted ? r.scoreFormatted : (r.score !== null && typeof r.score !== 'undefined' ? String(r.score) + (details && details.scoreUnit ? (' ' + details.scoreUnit) : '') : '-')}</td></tr>))}</tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {details && details.scoreStats && (
+                                    <div>
+                                        <div className="font-medium mb-2">スコア配分</div>
+                                        <div className="text-sm text-gray-600">件数: {details.scoreStats.count} / 平均: {details.scoreStats.avgFormatted || (Math.round((details.scoreStats.avg||0)*100)/100 + (details.scoreUnit ? (' ' + details.scoreUnit) : ''))} / 最小: {details.scoreStats.minFormatted || details.scoreStats.min} / 最大: {details.scoreStats.maxFormatted || details.scoreStats.max}</div>
+                                        <div className="mt-2 text-sm">
+                                            {Object.keys(details.scoreStats.distributionFormatted || {}).sort((a,b)=>Number(a.replace(/[^0-9]/g,'')) - Number(b.replace(/[^0-9]/g,''))).reverse().map(k=>(<div key={k} className="flex justify-between text-xs py-1 border-b"><div>{k}</div><div>{details.scoreStats.distributionFormatted[k]} 件</div></div>))}
+                                        </div>
+                                    </div>
+                                )}
+                                {details && !details.error && !details.response && !details.latestPerEmail && !details.scoreStats && (
+                                    <div className="text-gray-500">表示できる詳細がありません。</div>
+                                )}
+                            </div>
+                            </>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
         function App() {
             const [view, setView] = useState('loading');
             const [user, setUser] = useState(null);
@@ -194,6 +326,7 @@
                             runGas('getAuthUrl').then(url => setAuthUrl(url)).catch(()=>{});
                         }
                     }
+
                     else if (res.status === 'guest') { runGas('getAuthUrl').then(url => { setAuthUrl(url); setView('guest'); }); }
                     else { throw new Error(res.message); }
                 }).catch(e => { setErrorMsg(e.message); setView('error'); });
@@ -348,12 +481,362 @@
                         <button onClick={() => setTab('roster')} className={`flex-1 py-3 text-center font-bold text-sm border-b-2 transition ${tab === 'roster' ? 'border-indigo-600 text-indigo-600 bg-white' : 'border-transparent text-gray-500 hover:bg-gray-100'}`}>
                             <i className="fas fa-list mr-2"></i> 名簿
                         </button>
+                        <button onClick={() => setTab('survey')} className={`flex-1 py-3 text-center font-bold text-sm border-b-2 transition ${tab === 'survey' ? 'border-rose-600 text-rose-600 bg-white' : 'border-transparent text-gray-500 hover:bg-gray-100'}`}>
+                            <i className="fas fa-poll mr-2"></i> アンケート
+                        </button>
                     </div>
                     <div className="flex-1 overflow-hidden relative">
                         {tab === 'dm' && <DmTab user={user} authUrl={authUrl} />}
                         {tab === 'channel' && <ChannelTab user={user} authUrl={authUrl} />}
                         {tab === 'mypage' && <MyPage />}
                         {tab === 'roster' && <RosterTab user={user} />}
+                        {tab === 'survey' && <SurveyTab user={user} />}
+                    </div>
+                </div>
+            );
+        }
+
+        function SurveyTab({ user }) {
+            const [surveys, setSurveys] = useState([]);
+            const [surveysLoading, setSurveysLoading] = useState(false);
+            const [surveyFetchError, setSurveyFetchError] = useState('');
+            const safeSetSurveyError = (v) => { try { if (typeof setSurveyFetchError === 'function') setSurveyFetchError(v); } catch(e){} };
+            const [loading, setLoading] = useState(true);
+            const [selected, setSelected] = useState(null);
+            const [err, setErr] = useState('');
+            const [modalOpen, setModalOpen] = useState(false);
+            const [modalLoading, setModalLoading] = useState(false);
+            const [modalDetails, setModalDetails] = useState(null);
+            const [isAdmin, setIsAdmin] = useState(false);
+            const [formsLoading, setFormsLoading] = useState(false);
+            const [formsError, setFormsError] = useState('');
+            const [formDefs, setFormDefs] = useState([]);
+            const [formOptions, setFormOptions] = useState(null);
+            const [formSelectOpen, setFormSelectOpen] = useState(false);
+            const [formEditOpen, setFormEditOpen] = useState(false);
+            const [formSaving, setFormSaving] = useState(false);
+            const [formDraft, setFormDraft] = useState({
+                rowIndex: null,
+                spreadsheetRef: '',
+                formUrl: '',
+                title: '',
+                inChargeOrg: '',
+                inChargeDept: '',
+                collecting: false,
+                scoreName: '',
+                scoreUnit: ''
+            });
+
+            const formIsValid = (formDraft && typeof formDraft === 'object') ? ((formDraft.title || '').toString().trim().length > 0 && (((formDraft.spreadsheetRef||'').toString().trim().length > 0) || ((formDraft.formUrl||'').toString().trim().length > 0))) : false;
+
+            useEffect(() => {
+                setLoading(true); setErr('');
+                const token = localStorage.getItem('slack_app_session');
+                runGas('listSurveys', token).then(res => {
+                    setSurveys(res || []);
+                }).catch(e => setErr(e.message || e)).finally(()=>setLoading(false));
+
+                runGas('getUserProfile', token)
+                    .then(p => { setIsAdmin(!!p.isAdmin); })
+                    .catch(()=>{});
+                // fetch org/department options for form editing dropdowns
+                runGas('getSearchOptions').then(o=>setFormOptions(o)).catch(()=>{});
+            }, []);
+
+            const loadFormDefs = async () => {
+                setFormsError('');
+                setFormsLoading(true);
+                try {
+                    const token = localStorage.getItem('slack_app_session');
+                    const res = await runGas('listFormDefinitions', token);
+                    if (res && res.success) {
+                        setFormDefs(res.items || []);
+                    } else {
+                        setFormDefs([]);
+                        setFormsError(res && res.message ? res.message : '取得に失敗しました');
+                    }
+                } catch (e) {
+                    setFormDefs([]);
+                    setFormsError(e && e.message ? e.message : String(e));
+                } finally {
+                    setFormsLoading(false);
+                }
+            };
+
+            const openNewForm = () => {
+                setFormDraft({
+                    rowIndex: null,
+                    spreadsheetRef: '',
+                    formUrl: '',
+                    title: '',
+                    inChargeOrg: '',
+                    inChargeDept: '',
+                    collecting: true,
+                    scoreName: '',
+                    scoreUnit: ''
+                });
+                setFormEditOpen(true);
+            };
+
+            const openEditSelect = async () => {
+                setFormSelectOpen(true);
+                if (!formsLoading) loadFormDefs();
+            };
+
+            const openEditForm = (item) => {
+                if (!item) return;
+                setFormDraft({
+                    rowIndex: item.rowIndex,
+                    spreadsheetRef: item.spreadsheetRef || '',
+                    formUrl: item.formUrl || '',
+                    title: item.title || '',
+                    inChargeOrg: item.inChargeOrg || '',
+                    inChargeDept: item.inChargeDept || '',
+                    collecting: !!item.collecting,
+                    scoreName: item.scoreName || '',
+                    scoreUnit: item.scoreUnit || ''
+                });
+                setFormSelectOpen(false);
+                setFormEditOpen(true);
+            };
+
+            const saveForm = async () => {
+                setFormSaving(true);
+                try {
+                    const token = localStorage.getItem('slack_app_session');
+                    const res = await runGas('saveFormDefinition', token, formDraft);
+                    if (!res || !res.success) throw new Error(res && res.message ? res.message : '保存に失敗しました');
+                    setFormEditOpen(false);
+                    loadFormDefs();
+                    const list = await runGas('listSurveys', token);
+                    if (Array.isArray(list)) setSurveys(list);
+                } catch (e) {
+                    alert(e.message || e);
+                } finally {
+                    setFormSaving(false);
+                }
+            };
+
+            const openDetails = async (survey) => {
+                if (!survey) return;
+                const ref = survey.spreadsheetUrl || survey.spreadsheetId;
+                if (!ref) return;
+                setSelected(ref); setErr(''); setModalOpen(true); setModalLoading(true); setModalDetails(null);
+                try {
+                    const token = localStorage.getItem('slack_app_session');
+                    const rowIndex = survey.userLatestRowIndex;
+                    const d = await runGas('getSurveyDetails', token, ref, rowIndex);
+                    if (!d) { setModalDetails({ error: 'サーバー応答が不正です' }); setModalLoading(false); return; }
+                    if (d.success === false) { setModalDetails({ error: d.message || '参照できません' }); setModalLoading(false); return; }
+                    setModalDetails(d);
+                } catch (e) { setModalDetails({ error: e.message || String(e) }); }
+                finally { setModalLoading(false); }
+            };
+
+            const openForm = (survey) => {
+                if (!survey) return;
+                const url = String(survey.formUrl || '').trim();
+                if (!url) { setErr('フォームURLが設定されていません。'); return; }
+                // open raw URL as-is
+                try { window.open(url, '_blank', 'noopener'); } catch (e) { setErr('リンクを開けませんでした'); }
+            };
+
+            const isCollectingFlag = (s) => {
+                if (!s) return false;
+                if (s.collecting === true) return true;
+                const sval = String(s.collecting || '').trim().toLowerCase();
+                if (sval === 'true' || sval === '1') return true;
+                if (typeof s.collecting === 'number' && Number(s.collecting) === 1) return true;
+                return false;
+            };
+
+            const answered = surveys.filter(s => s && s.available);
+            const unanswered = surveys.filter(s => s && !s.available && isCollectingFlag(s));
+
+            const selectedSurvey = surveys.find(s => (s && (s.spreadsheetUrl || s.spreadsheetId)) === selected) || null;
+
+            const formatDateJP = (ts) => {
+                if (!ts) return '-';
+                try {
+                    const d = new Date(Number(ts));
+                    if (isNaN(d.getTime())) return '-';
+                    const y = d.getFullYear();
+                    const mo = ('0' + (d.getMonth() + 1)).slice(-2);
+                    const da = ('0' + d.getDate()).slice(-2);
+                    const hh = ('0' + d.getHours()).slice(-2);
+                    const mm = ('0' + d.getMinutes()).slice(-2);
+                    return `${y}/${mo}/${da} ${hh}:${mm}`;
+                } catch (e) { return '-'; }
+            };
+
+            return (
+                <div className="h-full overflow-auto p-4 bg-gray-50">
+                    <div className="max-w-6xl mx-auto bg-white rounded-lg shadow-sm p-6 space-y-6">
+                        <div className="flex items-start justify-between gap-3">
+                            <div>
+                                <h3 className="text-2xl font-bold mb-1">アンケート</h3>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                                <button onClick={openNewForm} className="text-xs bg-green-100 text-green-900 px-3 py-1 rounded hover:brightness-95">
+                                    新規登録
+                                </button>
+                                <button onClick={openEditSelect} className="text-xs bg-yellow-100 text-yellow-900 px-3 py-1 rounded hover:brightness-95">
+                                    編集
+                                </button>
+                            </div>
+                        </div>
+
+                        {loading && <div className="text-gray-500"><i className="fas fa-spinner fa-spin mr-2"></i>読み込み中...</div>}
+                        {err && <div className="text-red-600 mb-3">{err}</div>}
+
+                        <div className="flex flex-col gap-4">
+                            <div className="border rounded p-4 bg-white">
+                                <div className="flex items-center justify-between mb-3">
+                                    <div className="font-medium">未回答</div>
+                                    <div className="text-xs text-gray-500">収集中のフォーム</div>
+                                </div>
+                                {unanswered.length === 0 && !loading ? (
+                                    <div className="text-sm text-gray-600">未回答のアンケートはありません。</div>
+                                ) : (
+                                    <div className="space-y-3">
+                                        {unanswered.map((s, i) => (
+                                                    <div key={i} onClick={() => openForm(s)} role="button" tabIndex={0} className="flex items-start justify-between p-3 border rounded hover:shadow-sm cursor-pointer">
+                                                        <div>
+                                                            <div className="font-medium">{s.title}</div>
+                                                            <div className="text-xs text-gray-600">{(s.inChargeOrg || '-') + (s.inChargeDept ? (' / ' + s.inChargeDept) : '')}</div>
+                                                        </div>
+                                                        <div className="flex items-center gap-2">
+                                                            {isCollectingFlag(s) && <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded">収集中</span>}
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="border rounded p-4 bg-white">
+                                <div className="flex items-center justify-between mb-3">
+                                    <div className="font-medium">回答済み</div>
+                                    <div className="text-xs text-gray-500">最新の回答とスコア</div>
+                                </div>
+                                <div className="overflow-auto">
+                                    <table className="min-w-full text-sm">
+                                        <thead className="bg-gray-100">
+                                            <tr>
+                                                <th className="px-3 py-2 text-left">アンケートタイトル</th>
+                                                <th className="px-3 py-2 text-left">担当局 / 部門</th>
+                                                <th className="px-3 py-2 text-left">スコア</th>
+                                                <th className="px-3 py-2 text-left">回答日</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {answered.map((s, i) => (
+                                                <tr key={i} onClick={() => openDetails(s)} role="button" tabIndex={0} className={`${'hover:bg-gray-50 cursor-pointer'} ${selected===(s.spreadsheetUrl || s.spreadsheetId)? 'bg-blue-50':''}`}>
+                                                    <td className="px-3 py-2 border-t">{s.title}</td>
+                                                    <td className="px-3 py-2 border-t text-sm text-gray-700">{(s.inChargeOrg || '-') + (s.inChargeDept ? (' / ' + s.inChargeDept) : '')}</td>
+                                                    <td className="px-3 py-2 border-t">{s.latestScoreFormatted ? s.latestScoreFormatted : (s.latestScore !== null && typeof s.latestScore !== 'undefined' ? String(s.latestScore) + (s.scoreUnit ? (' ' + s.scoreUnit) : '') : '-')}</td>
+                                                    <td className="px-3 py-2 border-t">{s.latestResponseDate ? formatDateJP(s.latestResponseDate) : '-'}</td>
+                                                </tr>
+                                            ))}
+                                            {answered.length===0 && !loading && <tr><td className="px-3 py-4" colSpan={4}>回答済みのアンケートはありません。</td></tr>}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+
+                        <DetailsModal isOpen={modalOpen} loading={modalLoading} details={modalDetails} survey={selectedSurvey} onClose={() => { setModalOpen(false); setModalDetails(null); setModalLoading(false); }} />
+                        {formSelectOpen && (
+                            <div className="fixed inset-0 flex items-center justify-center modal-overlay p-4 z-[220]">
+                                <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl p-5 max-h-[80vh] overflow-auto">
+                                    <div className="flex items-center justify-between mb-3">
+                                        <h4 className="font-bold">アンケートを選択</h4>
+                                        <button onClick={() => setFormSelectOpen(false)} className="text-sm text-gray-500 hover:text-gray-700">閉じる</button>
+                                    </div>
+                                    {formsLoading && <div className="text-gray-500 text-sm"><i className="fas fa-spinner fa-spin mr-2"></i>読み込み中...</div>}
+                                    {formsError && <div className="text-red-600 text-sm mb-2">{formsError}</div>}
+                                    {!formsLoading && formDefs.length === 0 && !formsError && (
+                                        <div className="text-sm text-gray-500">登録済みのアンケートがありません。</div>
+                                    )}
+                                    <div className="divide-y">
+                                        {[...formDefs].reverse().map((f, i) => (
+                                            <div key={i} className="py-3 flex items-center justify-between">
+                                                <div className="min-w-0">
+                                                    <div className="font-medium truncate">{f.title || f.spreadsheetRef || f.formUrl || '無題'}</div>
+                                                    <div className="text-xs text-gray-500 truncate">{(f.inChargeOrg || '-') + (f.inChargeDept ? (' / ' + f.inChargeDept) : '')}</div>
+                                                </div>
+                                                <button onClick={() => openEditForm(f)} className="text-sm px-3 py-1 rounded border">編集</button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                        {formEditOpen && (
+                            <div className="fixed inset-0 flex items-center justify-center modal-overlay p-4 z-[230]">
+                                <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl p-5 max-h-[85vh] overflow-auto">
+                                    <div className="flex items-center justify-between mb-3">
+                                        <h4 className="font-bold">アンケート登録 / 編集</h4>
+                                        <button onClick={() => setFormEditOpen(false)} className="text-sm text-gray-500 hover:text-gray-700">閉じる</button>
+                                    </div>
+                                    <div className="space-y-3 text-sm">
+                                        <p>スプレッドシートにメールアドレス・スコアを登録すれば、フォームに関係なく個人別データの配布が可能です。</p>
+                                        <p>回答を求める場合は、スプレッドシートURLとGoogle Forms回答者リンクの両方を設定してください。</p>
+                                        <br />
+                                        <div>
+                                            <label className="block text-xs text-gray-500 mb-1">スプレッドシートURL(共有→リンクをコピー)</label>
+                                            <input className="w-full border p-2 rounded" value={formDraft.spreadsheetRef} onChange={e => setFormDraft(prev => ({ ...prev, spreadsheetRef: e.target.value }))} />
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs text-gray-500 mb-1">Google Forms回答者リンク</label>
+                                            <input className="w-full border p-2 rounded" value={formDraft.formUrl} onChange={e => setFormDraft(prev => ({ ...prev, formUrl: e.target.value }))} />
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs text-gray-500 mb-1">タイトル</label>
+                                            <input className="w-full border p-2 rounded" value={formDraft.title} onChange={e => setFormDraft(prev => ({ ...prev, title: e.target.value }))} />
+                                        </div>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            <div>
+                                                <label className="block text-xs text-gray-500 mb-1">担当局</label>
+                                                <select className="w-full border p-2 rounded" value={formDraft.inChargeOrg} onChange={e => setFormDraft(prev => ({ ...prev, inChargeOrg: e.target.value, inChargeDept: '' }))}>
+                                                    <option value="">選択</option>
+                                                    {(formOptions && formOptions.orgs ? Array.from(new Set(formOptions.orgs)) : []).map((o2,idx)=>(<option key={idx} value={o2}>{o2}</option>))}
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs text-gray-500 mb-1">担当部門</label>
+                                                <select className="w-full border p-2 rounded" value={formDraft.inChargeDept} onChange={e => setFormDraft(prev => ({ ...prev, inChargeDept: e.target.value }))} disabled={!(formOptions && formOptions.deptMaster && formDraft.inChargeOrg)}>
+                                                    <option value="">選択</option>
+                                                    {(formOptions && formOptions.deptMaster ? Array.from(new Set(formOptions.deptMaster.filter(d=>d.org===formDraft.inChargeOrg).map(d=>d.dept))) : []).map((d2,idx)=>(<option key={idx} value={d2}>{d2}</option>))}
+                                                </select>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-3">
+                                            <button type="button" onClick={() => setFormDraft(prev => ({ ...prev, collecting: !prev.collecting }))} className={`relative inline-flex flex-shrink-0 h-6 w-11 border-2 border-transparent rounded-full cursor-pointer transition-colors ease-in-out duration-200 ${formDraft.collecting ? 'bg-green-500' : 'bg-gray-300'}`} role="switch" aria-checked={!!formDraft.collecting}>
+                                                <span className={`inline-block h-5 w-5 transform bg-white rounded-full shadow ring-0 transition ease-in-out duration-200 ${formDraft.collecting ? 'translate-x-5' : 'translate-x-0'}`} />
+                                            </button>
+                                            <span className="text-sm">{formDraft.collecting ? '収集中' : '収集終了'}</span>
+                                        </div>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            <div>
+                                                <label className="block text-xs text-gray-500 mb-1">スコア名</label>
+                                                <input className="w-full border p-2 rounded" value={formDraft.scoreName} onChange={e => setFormDraft(prev => ({ ...prev, scoreName: e.target.value }))} />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs text-gray-500 mb-1">スコア単位</label>
+                                                <input className="w-full border p-2 rounded" value={formDraft.scoreUnit} onChange={e => setFormDraft(prev => ({ ...prev, scoreUnit: e.target.value }))} />
+                                            </div>
+                                        </div>
+                                    </div>
+                                        <div className="mt-4 flex items-center justify-end gap-2">
+                                        <button onClick={() => setFormEditOpen(false)} className="px-4 py-2 rounded bg-gray-100">キャンセル</button>
+                                        <button onClick={saveForm} disabled={formSaving || !formIsValid} className={`px-4 py-2 rounded text-white ${formSaving || !formIsValid ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'}`}>
+                                            {formSaving ? '保存中...' : '保存'}
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
                     </div>
                 </div>
             );
@@ -390,7 +873,7 @@
                 { key: '出身校', label: '出身校', adminOnly: true },
                 { key: '退局', label: '退局ステータス', adminOnly: true },
                 { key: '次年度継続', label: '次年度継続ステータス', adminOnly: true },
-                { key: 'Admin', label: 'Admin (12)', adminOnly: true }
+                { key: 'Admin', label: '管理者権限', adminOnly: true }
             ]);
 
             const [selected, setSelected] = useState(new Set());
@@ -403,7 +886,7 @@
                 for (const f of fields) {
                     // 所属2-5グループの開始を検出
                     if (f.key === '所属局2' && !skippingGroup) {
-                        out.push({ key: '所属2-5', label: '所属先・部門・役職（2～5）', isGroup: true, adminOnly: false });
+                        out.push({ key: '所属2-5', label: '所属局・部門・役職（2～5）', isGroup: true, adminOnly: false });
                         skippingGroup = true;
                         continue;
                     }
@@ -431,6 +914,11 @@
             const [deptChecked, setDeptChecked] = useState({}); // {orgName: {deptName: true}}
             const [gradeOptions, setGradeOptions] = useState([]);
             const [fieldOptions, setFieldOptions] = useState([]);
+            const [surveys, setSurveys] = useState([]);
+            const [surveysLoading, setSurveysLoading] = useState(false);
+            const [surveyFetchError, setSurveyFetchError] = useState('');
+            const safeSetSurveyError = (v) => { try { if (typeof setSurveyFetchError === 'function') setSurveyFetchError(v); } catch(e){} };
+            const [selectedSurveyRef, setSelectedSurveyRef] = useState('');
             const [selectedGrade, setSelectedGrade] = useState('');
             const [selectedFieldFilter, setSelectedFieldFilter] = useState('');
             const [statusFilter, setStatusFilter] = useState('active'); // 'active' (在籍), 'retired', 'all'
@@ -468,6 +956,31 @@
                         setOrgChecked(oc); setDeptChecked(dc);
                     } catch (e) { console.warn(e); }
                 }).catch(()=>{});
+
+                // fetch surveys for dropdown (with loading state)
+                        const fetchSurveys = async () => {
+                    safeSetSurveyError('');
+                    setSurveysLoading(true);
+                    try {
+                        const list = await runGas('listSurveys', token);
+                        if (Array.isArray(list)) {
+                                    const mapped = list.map(s => ({ title: s.title || s.spreadsheetId || s.formUrl || s.spreadsheetUrl, ref: s.spreadsheetId || s.spreadsheetUrl || s.formUrl || '', inChargeOrg: s.inChargeOrg || '', inChargeDept: s.inChargeDept || '' }));
+                                    setSurveys(mapped.filter(s=>s.ref));
+                        } else if (list && list.message) {
+                            setSurveys([]);
+                            safeSetSurveyError(String(list.message));
+                        } else {
+                            setSurveys([]);
+                        }
+                    } catch (e) {
+                        console.warn('listSurveys error', e);
+                        setSurveys([]);
+                        safeSetSurveyError(e && e.message ? e.message : String(e));
+                    } finally {
+                        setSurveysLoading(false);
+                    }
+                };
+                fetchSurveys();
             }, []);
 
             const toggleField = (k, adminOnly) => {
@@ -537,12 +1050,13 @@
             };
 
             const openExportModal = async () => {
+                // open modal immediately (shows loading) and generate preview; close modal on failure
                 setModalOpen(true);
-                // generate preview when modal opens
-                generatePreview();
+                const ok = await generatePreview();
+                if (!ok) setModalOpen(false);
             };
 
-            const buildExportPayload = () => {
+                const buildExportPayload = () => {
                 const arr = Array.from(selected);
                 const expanded = [];
                 for (const v of arr) {
@@ -582,12 +1096,12 @@
                 const get = (type) => (parts.find(p=>p.type===type)||{}).value || '';
                 const ts = get('year') + get('month') + get('day') + get('hour') + get('minute') + get('second');
                 const filenameAtPress = 'list_' + ts + '.csv';
-                return { expanded, filter, filenameAtPress };
+                return { expanded, filter, filenameAtPress, surveyRef: (typeof selectedSurveyRef !== 'undefined' ? selectedSurveyRef : '') };
             };
 
             const fetchCsvText = async (payload) => {
                 const token = localStorage.getItem('slack_app_session');
-                const res = await runGas('createRosterCsv', token, { selectedFields: payload.expanded, filter: payload.filter, filename: payload.filenameAtPress });
+                    const res = await runGas('createRosterCsv', token, { selectedFields: payload.expanded, filter: payload.filter, filename: payload.filenameAtPress, surveyRef: payload.surveyRef });
                 if (!res || !res.success) throw new Error(res && res.message ? res.message : '作成に失敗しました');
                 let csvText = '';
                 const fname = payload.filenameAtPress || res.filename || 'list.csv';
@@ -606,7 +1120,7 @@
             };
 
             const generatePreview = async () => {
-                if (selected.size === 0) { alert('出力項目を選択してください'); return; }
+                if (selected.size === 0) { alert('出力項目を選択してください'); return false; }
                 setBusy(true);
                 try {
                     const payload = buildExportPayload();
@@ -624,7 +1138,8 @@
                         });
                     }
                     setPreviewData({ filename: fname, headers: parsed.headers, rows: parsed.rows, csvText: csvText, excelBase64: excelB64 });
-                } catch (e) { alert(e.message || e); setPreviewData(null); }
+                    return true;
+                } catch (e) { alert(e.message || e); setPreviewData(null); return false; }
                 finally { setBusy(false); }
             };
 
@@ -665,7 +1180,12 @@
 
             return (
                 <div className="flex flex-col h-full p-4 md:p-6 bg-gray-50">
-                    <div className="max-w-4xl mx-auto bg-white rounded-lg shadow-sm p-6 h-full overflow-y-auto">
+                    <div className="max-w-4xl mx-auto bg-white rounded-lg shadow-sm p-6 h-full overflow-y-auto relative">
+                            {surveysLoading && (
+                                <div className="absolute inset-0 bg-white bg-opacity-80 flex items-center justify-center z-50">
+                                    <div className="flex justify-center items-center text-gray-500"><i className="fas fa-spinner fa-spin mr-2"></i>読み込み中...</div>
+                                </div>
+                            )}
                         <h3 className="text-lg font-bold mb-3">名簿出力</h3>
                         <p className="text-sm text-gray-600 mb-4">出力したい項目を選択し、出力対象を設定して「出力」を押してください。</p>
 
@@ -694,6 +1214,25 @@
                                         </label>
                                     )
                                 ))}
+                            </div>
+                        </div>
+
+                        <div className="mb-4">
+                            <h4 className="font-medium mb-2">アンケート（オプション）</h4>
+                            <div>
+                                <select className="w-full border p-2 rounded" value={selectedSurveyRef} onChange={(e)=>setSelectedSurveyRef(e.target.value)}>
+                                    <option value="">アンケートを選択（出力時に名簿の後に追加）</option>
+                                    {surveys && surveys.length > 0 ? surveys.map(s => <option key={s.ref} value={s.ref}>{s.title + ( (s.inChargeOrg || s.inChargeDept) ? (' — ' + ((s.inChargeOrg || '-') + (s.inChargeDept ? (' / ' + s.inChargeDept) : '')) ) : '' )}</option>) : null}
+                                </select>
+                                {surveys.length === 0 && !surveysLoading && (
+                                    <div className="mt-2 text-xs text-gray-500">
+                                        {surveyFetchError ? (
+                                            <div>アンケートの取得に失敗しました: <span className="text-red-600">{surveyFetchError}</span> <button className="ml-2 text-blue-600 underline" onClick={() => { const t = localStorage.getItem('slack_app_session'); runGas('listSurveys', t).then(list => { if (Array.isArray(list)) { const mapped = list.map(s => ({ title: s.title || s.spreadsheetId || s.formUrl || s.spreadsheetUrl, ref: s.spreadsheetId || s.spreadsheetUrl || s.formUrl || '' })); setSurveys(mapped.filter(s=>s.ref)); safeSetSurveyError(''); } else if (list && list.message) { safeSetSurveyError(String(list.message)); } }).catch(e=>safeSetSurveyError(e && e.message?e.message:String(e))); }}>再読み込み</button></div>
+                                        ) : (
+                                            <div>アンケートが見つかりません。<button className="ml-2 text-blue-600 underline" onClick={() => { const t = localStorage.getItem('slack_app_session'); runGas('listSurveys', t).then(list => { if (Array.isArray(list)) { const mapped = list.map(s => ({ title: s.title || s.spreadsheetId || s.formUrl || s.spreadsheetUrl, ref: s.spreadsheetId || s.spreadsheetUrl || s.formUrl || '' })); setSurveys(mapped.filter(s=>s.ref)); safeSetSurveyError(''); } else if (list && list.message) { safeSetSurveyError(String(list.message)); } }).catch(e=>safeSetSurveyError(e && e.message?e.message:String(e))); }}>再読み込み</button></div>
+                                        )}
+                                    </div>
+                                )}
                             </div>
                         </div>
 
@@ -805,6 +1344,41 @@
                                         <div className="mt-3 border-t pt-3 flex items-center justify-end gap-3 shrink-0 bg-white">
                                             <input className="border p-2 rounded w-64" value={filename} onChange={e=>setFilename(e.target.value)} />
                                             <button onClick={()=>setModalOpen(false)} className="px-4 py-2 rounded bg-gray-100">キャンセル</button>
+                                            <button onClick={async ()=>{
+                                                try {
+                                                    if (!previewData || !previewData.rows || !previewData.headers) { alert('コピーする内容がありません'); return; }
+                                                    // build HTML table
+                                                    const headers = previewData.headers;
+                                                    const rows = previewData.rows;
+                                                    const esc = (s) => String(s === null || typeof s === 'undefined' ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+                                                    let html = '<table>';
+                                                    html += '<thead><tr>' + headers.map(h => '<th>' + esc(h) + '</th>').join('') + '</tr></thead>';
+                                                    html += '<tbody>' + rows.map(r => '<tr>' + headers.map((_,i) => '<td>' + esc(r[i] || '') + '</td>').join('') + '</tr>').join('') + '</tbody>';
+                                                    html += '</table>';
+                                                    // plain text (tab separated)
+                                                    const plain = [headers.join('\t')].concat(rows.map(r => headers.map((_,i) => (r[i] || '')).join('\t'))).join('\n');
+
+                                                    // try Clipboard API with HTML and plain text
+                                                    if (navigator.clipboard && navigator.clipboard.write) {
+                                                        const blobHtml = new Blob([html], { type: 'text/html' });
+                                                        const blobPlain = new Blob([plain], { type: 'text/plain' });
+                                                        const item = new ClipboardItem({ 'text/html': blobHtml, 'text/plain': blobPlain });
+                                                        await navigator.clipboard.write([item]);
+                                                        alert('表形式をクリップボードにコピーしました（貼り付け先で表として貼れます）');
+                                                        return;
+                                                    }
+
+                                                    // fallback: write plain text only
+                                                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                                                        await navigator.clipboard.writeText(plain);
+                                                        alert('表形式テキストをクリップボードにコピーしました（タブ区切り）');
+                                                        return;
+                                                    }
+
+                                                    // final fallback: legacy execCommand using a temporary textarea
+                                                    const ta = document.createElement('textarea'); ta.value = plain; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); alert('表形式テキストをクリップボードにコピーしました（フォールバック）'); } catch (e) { throw e; } finally { ta.remove(); }
+                                                } catch (e) { alert('コピーに失敗しました: ' + (e && e.message ? e.message : e)); }
+                                            }} className="px-4 py-2 rounded bg-gray-800 text-white">クリップボードにコピー</button>
                                             <button onClick={doExportDownload} disabled={busy} className="px-4 py-2 rounded bg-indigo-600 text-white">ダウンロード</button>
                                         </div>
                                     </>
@@ -1127,10 +1701,19 @@
                                 <button
                                     type="button"
                                     onClick={() => {
-                                        if (!profile || !profile.isAdmin) return;
-                                        handleChange('retired', !profile.retired);
-                                    }}
-                                    disabled={!(profile && profile.isAdmin)}
+                                            if (!profile) return;
+                                            // 管理者は両方向で変更可能
+                                            if (profile.canEditNameEmail) {
+                                                handleChange('retired', !profile.retired);
+                                                return;
+                                            }
+                                            // 非管理者: 保存済みの値が在籍(false) の場合のみ保存まで編集可能
+                                            if (!savedProfile || savedProfile.retired === false) {
+                                                handleChange('retired', !profile.retired);
+                                            }
+                                        }}
+                                        // enabled when editorIsAdmin OR savedProfile indicates not retired (so non-admin can set to retired until saved)
+                                        disabled={!(profile && (profile.canEditNameEmail || !savedProfile || savedProfile.retired === false))}
                                     className={`relative inline-flex h-8 w-14 items-center rounded-full transition-colors ${
                                         profile.retired ? 'bg-red-600' : 'bg-gray-300'
                                     }`}
@@ -1149,10 +1732,10 @@
                                     type="button"
                                     onClick={() => {
                                         if (!continueSwitchEnabled) return;
-                                        if (!profile || !profile.isAdmin) return;
+                                        if (!profile || !profile.canEditNameEmail) return;
                                         handleChange('continueNext', !profile.continueNext);
                                     }}
-                                    disabled={!continueSwitchEnabled || !(profile && profile.isAdmin)}
+                                    disabled={!continueSwitchEnabled || !(profile && profile.canEditNameEmail)}
                                     className={`relative inline-flex h-8 w-14 items-center rounded-full transition-colors ${
                                         profile.continueNext ? 'bg-green-600' : 'bg-gray-300'
                                     }`}
