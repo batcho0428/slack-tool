@@ -2487,10 +2487,11 @@ function fetchCollectionSummary(sessionToken, collectionId) {
   logsOf.forEach(l => {
     const key = (l.email || '').toLowerCase();
     if (!collectedByEmail[key]) collectedByEmail[key] = { email: l.email, total: 0, entries: [] };
-    let sign = 1;
-    if (l.type === 'おつり') sign = -1; // treat change as negative
-    if (l.type === '返金') sign = -1; // refund reduces collected
-    collectedByEmail[key].total += Number(l.amount || 0) * sign;
+    let amt = Number(l.amount || 0);
+    if (l.type === 'おつり' || l.type === '返金') {
+      if (amt > 0) amt = -Math.abs(amt);
+    }
+    collectedByEmail[key].total += amt;
     collectedByEmail[key].entries.push(l);
   });
 
@@ -2499,10 +2500,11 @@ function fetchCollectionSummary(sessionToken, collectionId) {
   logsOf.forEach(l => {
     const handlerKey = (l.handler || '').toLowerCase();
     if (!collectedByHandler[handlerKey]) collectedByHandler[handlerKey] = { handler: l.handler, total: 0, entries: [] };
-    let signH = 1;
-    if (l.type === 'おつり') signH = -1;
-    if (l.type === '返金') signH = -1;
-    collectedByHandler[handlerKey].total += Number(l.amount || 0) * signH;
+    let amtH = Number(l.amount || 0);
+    if (l.type === 'おつり' || l.type === '返金') {
+      if (amtH > 0) amtH = -Math.abs(amtH);
+    }
+    collectedByHandler[handlerKey].total += amtH;
     collectedByHandler[handlerKey].entries.push(l);
   });
 

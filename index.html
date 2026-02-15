@@ -847,6 +847,7 @@
                     const [loading, setLoading] = useState(true);
                     const [selectedId, setSelectedId] = useState('');
                     const [summary, setSummary] = useState(null);
+                    const [summaryLoading, setSummaryLoading] = useState(false);
                     const [modalOpen, setModalOpen] = useState(false);
                     const [newMode, setNewMode] = useState('sheet'); // 'sheet' or 'forms'
                     const [sheetUrl, setSheetUrl] = useState('');
@@ -879,6 +880,7 @@
                     const [flowShowOnlyUnbalanced, setFlowShowOnlyUnbalanced] = useState(false);
                     const [flowSelectedPerson, setFlowSelectedPerson] = useState(null);
                     const [flowReceiveAmount, setFlowReceiveAmount] = useState(0);
+                    const [quickReceiveAmount, setQuickReceiveAmount] = useState(0);
                     const [handlerNameMap, setHandlerNameMap] = useState({});
                     const [recipientNameMap, setRecipientNameMap] = useState({});
                     const [expandedCollectors, setExpandedCollectors] = useState({});
@@ -891,6 +893,10 @@
                 runGas('ensureCollectionsSheets').catch(()=>{});
                 // initial lightweight load (dropdown will refresh on focus)
                 runGas('listCollections', token).then(res=>{ setCollections(res || []); }).catch(()=>{}).finally(()=>setLoading(false));
+                // prefetch org list once to avoid refetch on accounting open
+                runGas('getSearchOptions', token).then(opts=>{
+                    setFlowOrgList((opts && opts.orgs) ? opts.orgs : []);
+                }).catch(()=>{});
             }, []);
 
             const openNew = async () => {
@@ -971,35 +977,54 @@
                 }
             };
 
+            const refreshSummary = async (idOverride, showLoading = true) => {
+                const id = idOverride || selectedId;
+                if (!id) return;
+                if (showLoading) setSummaryLoading(true);
+                const token = localStorage.getItem('slack_app_session');
+                try {
+                    const res = await runGas('fetchCollectionSummary', token, id);
+                    try { setDebugMsg(JSON.stringify(res, null, 2)); } catch (ee) { setDebugMsg(String(res)); }
+                    setSummary(res);
+                    // fetch handler names for perCollector
+                    try {
+                        const handlers = (res && res.perCollector) ? res.perCollector.map(h=>h.handler).filter(Boolean).map(x=>x.toLowerCase()) : [];
+                        const unique = Array.from(new Set(handlers)).filter(Boolean);
+                        const map = {};
+                        for (const h of unique) {
+                            if (!h) continue;
+                            try {
+                                const found = await runGas('searchRecipients', { query: h, status: 'all' });
+                                if (found && found.length && found[0].name) map[h] = found[0].name;
+                            } catch(e) {}
+                        }
+                        setHandlerNameMap(map);
+                    } catch(e) { console.debug('handler name lookup failed', e); }
+                } catch (e) {
+                    setSummary({ error: e.message || e });
+                } finally {
+                    if (showLoading) setSummaryLoading(false);
+                }
+            };
+
             const onSelect = async (id) => {
                 setSelectedId(id);
                 setSummary(null);
                 if (!id) return;
-                const token = localStorage.getItem('slack_app_session');
-                try {
-                    const res = await runGas('fetchCollectionSummary', token, id);
-                        try { setDebugMsg(JSON.stringify(res, null, 2)); } catch (ee) { setDebugMsg(String(res)); }
-                        setSummary(res);
-                        // fetch handler names for perCollector
-                        try {
-                            const handlers = (res && res.perCollector) ? res.perCollector.map(h=>h.handler).filter(Boolean).map(x=>x.toLowerCase()) : [];
-                            const unique = Array.from(new Set(handlers)).filter(Boolean);
-                            const map = {};
-                            for (const h of unique) {
-                                if (!h) continue;
-                                try {
-                                    const found = await runGas('searchRecipients', { query: h, status: 'all' });
-                                    if (found && found.length && found[0].name) map[h] = found[0].name;
-                                } catch(e) {}
-                            }
-                            setHandlerNameMap(map);
-                        } catch(e) { console.debug('handler name lookup failed', e); }
-                } catch (e) { setSummary({ error: e.message || e }); }
+                await refreshSummary(id);
             };
 
             const openAccounting = (person) => {
                 // legacy single-person accounting (quick)
                 setAccountTarget(person);
+                if (person) {
+                    const expected = Number(person.expected || 0);
+                    const collected = Number(person.collected || 0);
+                    const diff = expected - collected;
+                    setQuickReceiveAmount(diff < 0 ? -Math.abs(diff) : Math.abs(diff));
+                } else {
+                    setQuickReceiveAmount(0);
+                }
                 setAccountingOpen(true);
             };
 
@@ -1018,13 +1043,15 @@
                         setFlowSelectedPerson({ email: entry.email, name: name, grade: entry.grade, field: entry.field, department: entry.department });
                         const expected = Number(entry.expected || 0);
                         const collected = Number(entry.collected || 0);
-                        // initialize receive amount to the displayed magnitude
-                        setFlowReceiveAmount(Math.abs(expected - collected) || 0);
+                        const diff = expected - collected;
+                        // overpaid => initialize as negative
+                        setFlowReceiveAmount(diff < 0 ? -Math.abs(diff) : Math.abs(diff));
                         setFlowStep('pay');
                         setAccountFlowOpen(true);
                     } else {
                         // fallback to quick accounting
                         setAccountTarget({ email: email, expected: 0, collected: 0 });
+                        setQuickReceiveAmount(0);
                         setAccountingOpen(true);
                     }
                 } catch (e) {
@@ -1042,11 +1069,11 @@
                 setFlowSelectedPerson(null);
                 setFlowShowOnlyUnbalanced(false);
                 setAccountFlowOpen(true);
+                setFlowLoading(true);
                 try {
-                    const token = localStorage.getItem('slack_app_session');
-                    const opts = await runGas('getSearchOptions', token).catch(()=>({ orgs: [] }));
-                    setFlowOrgList(opts.orgs || []);
+                    if (selectedId) await refreshSummary(selectedId, false);
                 } catch(e) { setFlowOrgList([]); }
+                finally { setFlowLoading(false); }
             };
 
             const loadPeopleForOrg = async (org) => {
@@ -1076,8 +1103,9 @@
                     const entry = (res && res.perPerson && Array.isArray(res.perPerson)) ? res.perPerson.find(p=> (p.email||'').toLowerCase() === (person.email||'').toLowerCase()) : ((summary && summary.perPerson) ? summary.perPerson.find(p=> (p.email||'').toLowerCase() === (person.email||'').toLowerCase()) : null);
                     const expected = entry ? Number(entry.expected || 0) : 0;
                     const collected = entry ? Number(entry.collected || 0) : 0;
-                    // set initial receive amount equal to the displayed amount (magnitude)
-                    setFlowReceiveAmount(Math.abs(expected - collected));
+                    const diff = expected - collected;
+                    // overpaid => initialize as negative
+                    setFlowReceiveAmount(diff < 0 ? -Math.abs(diff) : Math.abs(diff));
                     setFlowStep('pay');
                 } catch (e) {
                     alert(e && e.message ? e.message : String(e));
@@ -1096,20 +1124,17 @@
                 setFlowLoading(true);
                 try {
                     if (mode === 'receive') {
-                        // record positive receipt (server expects positive amount for 支払)
                         await runGas('recordPayment', token, collId, email, Math.abs(val), label || '受領', handler);
                     } else if (mode === 'change') {
-                        // record received and change via server helper (received positive)
                         await runGas('recordPaymentWithChange', token, collId, email, Math.abs(val), expected, handler);
                     } else if (mode === 'debt') {
                         const lbl = label || '過不足';
                         if (lbl === '返金') {
-                            // server treats '返金' as negative, so send positive amount
-                            await runGas('recordPayment', token, collId, email, Math.abs(val), '返金', handler);
+                            // refund should be recorded as a negative amount
+                            await runGas('recordPayment', token, collId, email, -Math.abs(val), '返金', handler);
                         } else {
-                            // 過不足扱い: record the received amount as-is under type '過不足'
-                            // (server will not flip sign for this type)
-                            await runGas('recordPayment', token, collId, email, Number(val || 0), '過不足', handler);
+                            // 過不足扱い: keep amount as-is but record as type '受領'
+                            await runGas('recordPayment', token, collId, email, Number(val || 0), '受領', handler);
                         }
                     }
                     // refresh summary
@@ -1144,11 +1169,11 @@
                     } else if (mode === 'debt') {
                         const lbl = label || '過不足';
                         if (lbl === '返金') {
-                            // send positive amount; server will negate for '返金'
-                            await runGas('recordPayment', token, collId, accountTarget.email, Math.abs(val), '返金', handler);
+                            // refund should be recorded as a negative amount
+                            await runGas('recordPayment', token, collId, accountTarget.email, -Math.abs(val), '返金', handler);
                         } else {
-                            // 過不足扱い: record received amount as-is under '過不足'
-                            await runGas('recordPayment', token, collId, accountTarget.email, Number(val || 0), '過不足', handler);
+                            // 過不足扱い: keep amount as-is but record as type '受領'
+                            await runGas('recordPayment', token, collId, accountTarget.email, Number(val || 0), '受領', handler);
                         }
                     }
                     // refresh
@@ -1170,10 +1195,10 @@
             return (
                 <div className="h-full overflow-auto p-4 bg-gray-50">
                     <div className="max-w-4xl mx-auto bg-white rounded-lg shadow-sm p-6 h-full">
-                        <div className="flex items-start justify-between mb-4">
+                        <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-2 mb-4">
                             <h3 className="text-xl font-bold">集金</h3>
-                                <div className="flex items-center gap-2">
-                                <button onClick={openNew} className="text-xs bg-green-100 text-green-900 px-3 py-1 rounded">新規登録</button>
+                                <div className="flex flex-wrap items-center gap-2">
+                                <button onClick={openNew} className="text-sm md:text-xs bg-green-100 text-green-900 px-4 py-2 rounded-lg">新規登録</button>
                                 <button onClick={async ()=>{
                                         setEditSelectOpen(true);
                                         setEditSelectLoading(true);
@@ -1183,13 +1208,13 @@
                                             setCollections(list || []);
                                         } catch(e) { }
                                         finally { setEditSelectLoading(false); }
-                                    }} className="text-xs bg-yellow-100 text-yellow-900 px-3 py-1 rounded">編集</button>
+                                    }} className="text-sm md:text-xs bg-yellow-100 text-yellow-900 px-4 py-2 rounded-lg">編集</button>
                             </div>
                         </div>
 
                         <div className="mb-4">
                             <label className="block text-sm mb-2">集金選択</label>
-                            <div className="flex gap-2">
+                            <div className="flex gap-2 flex-wrap">
                                 <button onClick={async ()=>{
                                     setSelectCollectionOpen(true);
                                     setCollectionsLoading(true);
@@ -1198,7 +1223,7 @@
                                         const list = await runGas('listCollections', token).catch(()=>[]);
                                         setCollections(list || []);
                                     } catch(e){} finally { setCollectionsLoading(false); }
-                                }} className="flex-1 text-left border p-2 rounded">{(collections.find(c=>c.id===selectedId) || { title: '選択してください' }).title}</button>
+                                }} className="flex-1 text-left border px-3 py-3 rounded-lg text-base md:text-sm">{(collections.find(c=>c.id===selectedId) || { title: '選択してください' }).title}</button>
                             </div>
                             {collectionsLoading && <div className="text-xs text-gray-500 mt-1">一覧を更新しています…</div>}
                         </div>
@@ -1207,7 +1232,11 @@
 
                         {summary && summary.success && (
                             <div className="border rounded p-4 bg-white">
-                                <div className="mb-2">集金状況 {fmt(summary.collectedTotal)} / {fmt(summary.expectedTotal)}（{summary.collectedCount}人/{summary.expectedCount}人）</div>
+                                <div className="flex items-center justify-between gap-3 mb-2">
+                                    <div>集金状況<br /> {fmt(summary.collectedTotal)}円 / {fmt(summary.expectedTotal)}円（{summary.collectedCount}人/{summary.expectedCount}人）</div>
+                                    <button onClick={() => refreshSummary()} className="text-xs bg-gray-100 px-3 py-2 rounded">再読み込み</button>
+                                </div>
+                                {summaryLoading && <div className="text-xs text-gray-500 mb-2">読み込み中...</div>}
                                 <div className="mt-2 space-y-2">
                                     {(summary.perCollector || []).filter(c=>Number(c.total||0) !== 0).map((p,idx)=> (
                                         <div key={idx} className="p-2 border rounded">
@@ -1232,7 +1261,7 @@
                                                         }
                                                         setRecipientNameMap(prev=>({ ...prev, ...rmap }));
                                                         setExpandedCollectors(prev=>({ ...prev, [key]: !prev[key] }));
-                                                    }} className="text-sm text-blue-600">詳細を表示</button>
+                                                    }} className="text-sm text-blue-600 px-3 py-2 rounded hover:bg-blue-50">詳細を表示</button>
                                                 </div>
                                                 {expandedCollectors[(p.handler||'').toLowerCase()] && (
                                                     <div className="mt-3 space-y-2">
@@ -1436,12 +1465,7 @@
                                                 setSelectedId(c.id || '');
                                                 setSelectCollectionOpen(false);
                                                 setSummary(null);
-                                                try {
-                                                    const token = localStorage.getItem('slack_app_session');
-                                                    const res = await runGas('fetchCollectionSummary', token, c.id || '');
-                                                    try { setDebugMsg(JSON.stringify(res, null, 2)); } catch (ee) { setDebugMsg(String(res)); }
-                                                    setSummary(res);
-                                                } catch (e) { setSummary({ error: e && e.message ? e.message : String(e) }); }
+                                                await refreshSummary(c.id || '');
                                             }}>
                                                 <div className="min-w-0">
                                                     <div className="font-medium truncate">{c.title || c.spreadsheetUrl || '無題'}</div>
@@ -1458,7 +1482,15 @@
                         {/* Accounting Modal (multi-step: org -> grade -> person -> pay) */}
                         {accountFlowOpen && (
                             <div className="fixed inset-0 flex items-center justify-center modal-overlay p-4 z-[230]">
-                                <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl p-5 max-h-[85vh] overflow-auto">
+                                <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl p-5 max-h-[85vh] overflow-auto relative">
+                                    {flowLoading && (
+                                        <div className="absolute inset-0 flex items-center justify-center bg-white/60 z-50">
+                                            <div className="flex flex-col items-center">
+                                                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-3"></div>
+                                                <div className="text-sm text-gray-600">読み込み中...</div>
+                                            </div>
+                                        </div>
+                                    )}
                                     <div className="flex items-center justify-between mb-3">
                                         <h4 className="font-bold">会計</h4>
                                         <div className="flex items-center gap-2">
@@ -1473,7 +1505,7 @@
                                             <div className="font-medium mb-2">所属局を選択</div>
                                             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                                                 {(flowOrgList || []).map((o, oi) => (
-                                                    <button key={oi} onClick={async ()=>{ setFlowSelectedOrg(o); try { await loadPeopleForOrg(o); setFlowStep('grade'); } catch(e){ setFlowPeople([]); setFlowStep('grade'); } }} className="text-left px-3 py-2 border rounded hover:bg-gray-50">{o}</button>
+                                                    <button key={oi} onClick={async ()=>{ setFlowSelectedOrg(o); try { await loadPeopleForOrg(o); setFlowStep('grade'); } catch(e){ setFlowPeople([]); setFlowStep('grade'); } }} className="text-left px-3 py-3 border rounded-lg hover:bg-gray-50 text-base md:text-sm">{o}</button>
                                                 ))}
                                                 {(flowOrgList || []).length === 0 && <div className="text-xs text-gray-500">所属局が見つかりません。</div>}
                                             </div>
@@ -1490,7 +1522,7 @@
                                             </div>
                                             <div className="flex flex-wrap gap-2">
                                                 {(flowGrades || []).map((g, gi) => (
-                                                    <button key={gi} onClick={()=>{ setFlowSelectedGrade(g); setFlowStep('person'); }} className="px-3 py-2 border rounded hover:bg-gray-50">{g}</button>
+                                                    <button key={gi} onClick={()=>{ setFlowSelectedGrade(g); setFlowStep('person'); }} className="px-3 py-3 border rounded-lg hover:bg-gray-50 text-base md:text-sm">{g}</button>
                                                 ))}
                                                 {(flowGrades || []).length === 0 && <div className="text-xs text-gray-500">学年データがありません。</div>}
                                             </div>
@@ -1527,9 +1559,10 @@
                                                         const label = (() => {
                                                             if (!e || (e.entries || []).length === 0) return '請求額';
                                                             if (diff > 0) return '不足';
-                                                            if (diff < 0) return '過払い';
+                                                            if (diff < 0) return '返金';
                                                             return '差額';
                                                         })();
+                                                        const isOverpaid = diff < 0;
                                                         return (
                                                             <div key={pi} role="button" tabIndex={0} onClick={() => selectPersonInFlow(p)} className="p-2 border rounded flex items-center justify-between cursor-pointer">
                                                                 <div>
@@ -1537,8 +1570,8 @@
                                                                     <div className="text-xs text-gray-500">{p.grade || '-'} / {p.field || '-'} / {p.department || '-'}</div>
                                                                 </div>
                                                                 <div className="text-right">
-                                                                    <div className="text-2xl font-bold">{fmt(Math.abs(diff))}</div>
-                                                                    <div className="text-xs text-gray-500 mt-1">{label}</div>
+                                                                    <div className={`text-2xl font-bold ${isOverpaid ? 'text-red-600' : ''}`}>{fmt(Math.abs(diff))}</div>
+                                                                    <div className={`text-xs mt-1 ${isOverpaid ? 'text-red-600' : 'text-gray-500'}`}>{label}</div>
                                                                 </div>
                                                             </div>
                                                         );
@@ -1554,14 +1587,13 @@
                                                 <div className="absolute inset-0 flex items-center justify-center bg-white/60 z-50">
                                                     <div className="flex flex-col items-center">
                                                         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-3"></div>
-                                                        <div className="text-sm text-gray-600">読み込み中…</div>
+                                                        <div className="text-sm text-gray-600">読み込み中...</div>
                                                     </div>
                                                 </div>
                                             )}
                                             <div className="mb-3">
                                                 <div className="text-center mb-3">
                                                     <div className="text-lg font-bold">{flowSelectedPerson.name || flowSelectedPerson.email}</div>
-                                                    <div className="text-sm text-gray-600">学年: {flowSelectedPerson.grade || '-'} / 分野: {flowSelectedPerson.field || '-'} / 所属: {flowSelectedPerson.department || '-'}</div>
                                                 </div>
                                                 <div className="text-center mb-3">
                                                     {(() => {
@@ -1569,11 +1601,11 @@
                                                         const expected = entry ? Number(entry.expected || 0) : 0;
                                                         const collected = entry ? Number(entry.collected || 0) : 0;
                                                         const diff = expected - collected;
-                                                        const label = (!entry || (entry.entries || []).length === 0) ? '請求額' : (diff > 0 ? '不足' : (diff < 0 ? '過払い' : '差額'));
+                                                        const label = (!entry || (entry.entries || []).length === 0) ? '請求額' : (diff > 0 ? '不足' : (diff < 0 ? '返金' : '差額'));
                                                         return (
                                                             <>
-                                                                <div className="text-3xl font-extrabold">{fmt(Math.abs(diff))}</div>
-                                                                <div className="text-sm text-gray-600 mt-1">{label}</div>
+                                                                <div className={`text-3xl font-extrabold ${(label === '不足' || label === '返金') ? 'text-red-600' : ''}`}>{fmt(Math.abs(diff))}</div>
+                                                                <div className={`text-sm mt-1 ${(label === '不足' || label === '返金') ? 'text-red-600 font-bold' : 'text-gray-600'}`}>{label}</div>
                                                             </>
                                                         );
                                                     })()}
@@ -1592,48 +1624,13 @@
                                                         const received = Number(flowReceiveAmount || 0);
 
                                                         // Rules:
-                                                        // - received > 0 and diff >= 0:
-                                                        //     received <= diff => 受領
-                                                        //     received > diff => おつり / 過不足扱い
-                                                        // - received > 0 and diff < 0: already overpaid => 返金 / 過不足扱い
-                                                        // - received < 0 and diff > 0: 不足 (過不足扱い)
-                                                        // - received < 0 and diff <= 0: 返金
-
-                                                        if (received > 0 && diff >= 0 && received <= diff) {
-                                                            return (
-                                                                <div className="flex">
-                                                                    <button onClick={()=>doFlowReceive('receive')} className="w-full text-lg py-4 bg-blue-600 text-white rounded-lg">{fmt(received)}円 受領</button>
-                                                                </div>
-                                                            );
-                                                        }
-
-                                                        if (received > 0 && diff >= 0 && received > diff) {
-                                                            return (
-                                                                <div className="space-y-2">
-                                                                    <button onClick={()=>doFlowReceive('change')} className="w-full text-lg py-3 bg-gray-200 text-gray-900 rounded">{fmt(received - diff)}円 おつり</button>
-                                                                    <button onClick={()=>doFlowReceive('debt','過不足')} className="w-full text-lg py-3 bg-yellow-200 text-gray-900 rounded">{fmt(Math.abs(received - diff))}円 過不足扱い（後日精算）</button>
-                                                                </div>
-                                                            );
-                                                        }
-
-                                                        if (received > 0 && diff < 0) {
-                                                            return (
-                                                                <div className="space-y-2">
-                                                                    <button onClick={()=>doFlowReceive('debt','返金')} className="w-full text-lg py-3 bg-gray-200 text-gray-900 rounded">{fmt(received)}円 返金</button>
-                                                                    <button onClick={()=>doFlowReceive('debt','過不足')} className="w-full text-lg py-3 bg-yellow-200 text-gray-900 rounded">{fmt(Math.abs(diff + received))}円 過不足扱い（後日精算）</button>
-                                                                </div>
-                                                            );
-                                                        }
+                                                        // - received >= 0:
+                                                        //     received <= diff (when diff >= 0) => 受領
+                                                        //     otherwise => おつり / 過不足扱い
+                                                        // - received < 0:
+                                                        //     返金のみ
 
                                                         if (received < 0) {
-                                                            if (diff > 0) {
-                                                                return (
-                                                                    <div className="flex">
-                                                                        <button onClick={()=>doFlowReceive('debt','過不足')} className="w-full text-lg py-3 bg-yellow-200 text-gray-900 rounded">{fmt(Math.abs(received))}円 過不足扱い（後日精算）</button>
-                                                                    </div>
-                                                                );
-                                                            }
-                                                            // received < 0 and diff <= 0 => refund
                                                             return (
                                                                 <div className="flex">
                                                                     <button onClick={()=>doFlowReceive('debt','返金')} className="w-full text-lg py-3 bg-gray-200 text-gray-900 rounded">{fmt(Math.abs(received))}円 返金</button>
@@ -1641,10 +1638,20 @@
                                                             );
                                                         }
 
-                                                        // fallback: show receive button
+                                                        if (diff >= 0 && received <= diff) {
+                                                            return (
+                                                                <div className="flex">
+                                                                    <button onClick={()=>doFlowReceive('receive')} className="w-full text-lg py-4 bg-blue-600 text-white rounded-lg">{fmt(received)}円 受領</button>
+                                                                </div>
+                                                            );
+                                                        }
+
+                                                        const base = Math.max(0, diff);
+                                                        const changeAmt = Math.max(0, received - base);
                                                         return (
-                                                            <div className="flex">
-                                                                <button onClick={()=>doFlowReceive('receive')} className="w-full text-lg py-4 bg-blue-600 text-white rounded-lg">{fmt(received)}円 受領</button>
+                                                            <div className="space-y-2">
+                                                                <button onClick={()=>doFlowReceive('change')} className="w-full text-lg py-3 bg-gray-200 text-gray-900 rounded">{fmt(changeAmt)}円 おつり</button>
+                                                                <button onClick={()=>doFlowReceive('debt','過不足')} className="w-full text-lg py-3 bg-yellow-200 text-gray-900 rounded">{fmt(Math.abs(received - base))}円 過不足扱い（後日精算）</button>
                                                             </div>
                                                         );
                                                     })()}
@@ -1673,30 +1680,33 @@
                                                                         )}
                                                                         <div className="text-center mb-3">
                                                                             <div className="text-lg font-bold">{(accountTarget && (accountTarget.name || accountTarget.email)) || '-'}</div>
-                                                                            <div className="text-sm text-gray-600">{(accountTarget && (accountTarget.department || accountTarget.inChargeDept)) || ''}</div>
-                                                                            <div className="text-xl font-bold mt-2">{fmt(accountTarget.expected - accountTarget.collected)}</div>
+                                                                            <div className={`text-xl font-bold mt-2 ${((accountTarget && Number(accountTarget.expected || 0) - Number(accountTarget.collected || 0) !== 0) ? 'text-red-600' : '')}`}>{fmt(accountTarget.expected - accountTarget.collected)}</div>
                                                                         </div>
                                                                         <div className="mb-3">
                                                                             <label className="block text-xs text-gray-500 mb-1">受取額</label>
-                                                                            <input id="collect-input-amount" type="number" defaultValue={Math.abs(accountTarget.expected - accountTarget.collected)} className="w-full border p-2 rounded" />
+                                                                            <input id="collect-input-amount" type="number" value={quickReceiveAmount || 0} onChange={(e)=>setQuickReceiveAmount(Number(e.target.value || 0))} className="w-full border p-2 rounded" />
                                                                         </div>
                                                                         <div className="flex items-center gap-2 justify-end">
-                                                                            <button className="px-3 py-1 bg-blue-600 text-white rounded" onClick={()=>doReceive('receive')}>受領</button>
                                                                             {(() => {
                                                                                 const remaining = Number(accountTarget.expected || 0) - Number(accountTarget.collected || 0);
-                                                                                if (remaining < 0) {
-                                                                                    // already overpaid: offer refund or adjustment
+                                                                                const received = Number(quickReceiveAmount || 0);
+                                                                                if (received < 0) {
                                                                                     return (
-                                                                                        <>
-                                                                                            <button className="px-3 py-1 bg-gray-200 rounded" onClick={()=>doReceive('debt','返金')}>返金</button>
-                                                                                            <button className="px-3 py-1 bg-yellow-200 rounded" onClick={()=>doReceive('debt','過不足')}>過不足扱い（後日返金）</button>
-                                                                                        </>
+                                                                                        <button className="px-3 py-1 bg-gray-200 rounded" onClick={()=>doReceive('debt','返金')}>返金</button>
                                                                                     );
                                                                                 }
-                                                                                // normal case: offer change
-                                                                                return (<button className="px-3 py-1 bg-gray-200 rounded" onClick={()=>doReceive('change')}>おつり</button>);
+                                                                                if (remaining >= 0 && received <= remaining) {
+                                                                                    return (
+                                                                                        <button className="px-3 py-1 bg-blue-600 text-white rounded" onClick={()=>doReceive('receive')}>受領</button>
+                                                                                    );
+                                                                                }
+                                                                                return (
+                                                                                    <>
+                                                                                        <button className="px-3 py-1 bg-gray-200 rounded" onClick={()=>doReceive('change')}>おつり</button>
+                                                                                        <button className="px-3 py-1 bg-yellow-200 rounded" onClick={()=>doReceive('debt','過不足')}>過不足扱い（後日返金）</button>
+                                                                                    </>
+                                                                                );
                                                                             })()}
-                                                                            <button className="px-3 py-1 bg-yellow-200 rounded" onClick={()=>doReceive('debt','過不足')}>過不足扱い（後日返金）</button>
                                                                         </div>
                                 </div>
                             </div>
