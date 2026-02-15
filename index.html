@@ -13,6 +13,7 @@
         };
     </script>
 
+
     <script src="https://cdn.tailwindcss.com"></script>
     <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
     <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -194,114 +195,8 @@
             );
         }
 
-        function DetailsModal({ isOpen, loading, details, onClose, survey }) {
-            if (!isOpen) return null;
-            return (
-                <div className="fixed inset-0 flex items-center justify-center modal-overlay p-4 z-[210]">
-                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl p-4 md:p-6 overflow-auto max-h-[80vh] animate-fade-in">
-                        <div className="flex items-center justify-between mb-4">
-                            <h3 className="text-lg font-bold">アンケート詳細</h3>
-                            <div className="flex items-center gap-2">
-                                {(() => {
-                                    const url = survey && String(survey.formUrl || '').trim();
-                                    const collecting = (() => {
-                                        if (!survey) return false;
-                                        if (survey.collecting === true) return true;
-                                        const sval = String(survey.collecting || '').trim().toLowerCase();
-                                        if (sval === 'true' || sval === '1') return true;
-                                        if (typeof survey.collecting === 'number' && Number(survey.collecting) === 1) return true;
-                                        return false;
-                                    })();
-                                    if (url && collecting) {
-                                        return (<button onClick={() => { try { window.open(url, '_blank', 'noopener'); } catch (e) { alert('リンクを開けませんでした'); } }} className="text-sm bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700">フォームを開く</button>);
-                                    }
-                                    return (<button disabled className="text-sm bg-gray-100 text-gray-400 px-3 py-1 rounded cursor-not-allowed">フォームを開く</button>);
-                                })()}
-                                <button onClick={onClose} className="text-sm text-gray-500 hover:text-gray-700">閉じる</button>
-                            </div>
-                        </div>
 
-                        {/* Details only; dropdown removed to avoid referencing outer scope variables */}
-                        {loading ? (
-                            <div className="flex flex-col items-center justify-center py-8"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div><div className="text-sm text-gray-600">読み込み中...</div></div>
-                        ) : (
-                            <>
-                            <div className="space-y-4 text-sm text-gray-800">
-                                {details && details.error && (<div className="text-red-600">{details.error}</div>)}
-                                {details && details.response && (
-                                    <div>
-                                        <div className="font-medium mb-2">あなたの回答</div>
-                                        <div className="text-xs text-gray-500 mb-2">
-                                            回答日時: {details.response.timestamp ? new Date(details.response.timestamp).toLocaleString('ja-JP') : '-'} / {details.scoreName ? details.scoreName : 'スコア'}: {details.response.scoreFormatted ? details.response.scoreFormatted : (details.response.score !== null && typeof details.response.score !== 'undefined' ? String(details.response.score) + (details.scoreUnit ? (' ' + details.scoreUnit) : '') : '-')}
-                                        </div>
-                                        <div className="overflow-auto max-h-64 border rounded">
-                                            <table className="min-w-full text-sm">
-                                                <thead className="bg-gray-100">
-                                                    <tr>
-                                                        <th className="px-2 py-1 text-left">項目</th>
-                                                        <th className="px-2 py-1 text-left">回答</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    {(details.headers && details.headers.length ? details.headers : Object.keys(details.response.answers || {})).map((h, idx) => {
-                                                            const key = h || `col${idx+1}`;
-                                                            const val = details.response.answers ? details.response.answers[key] : '';
-                                                            const scoreKeys = ['スコア','Score','合計','点数'];
-                                                            const isScore = scoreKeys.includes((h || '').toString());
-                                                            const displayKey = (isScore && details.scoreName) ? details.scoreName : key;
-                                                            let displayVal = '';
-                                                            if (isScore) {
-                                                                if (details.response && (details.response.scoreFormatted || (details.response.score !== null && typeof details.response.score !== 'undefined'))) {
-                                                                    displayVal = details.response.scoreFormatted ? details.response.scoreFormatted : String(details.response.score) + (details.scoreUnit ? (' ' + details.scoreUnit) : '');
-                                                                } else {
-                                                                    displayVal = val === null || typeof val === 'undefined' ? '' : String(val);
-                                                                }
-                                                            } else {
-                                                                displayVal = val === null || typeof val === 'undefined' ? '' : String(val);
-                                                            }
-                                                            return (
-                                                            <tr key={idx} className={`${idx%2===0?'bg-white':'bg-gray-50'}`}>
-                                                                <td className="px-2 py-1 border-t">{displayKey}</td>
-                                                                <td className="px-2 py-1 border-t">{displayVal}</td>
-                                                            </tr>
-                                                            );
-                                                        })}
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                    </div>
-                                )}
 
-                                {details && details.latestPerEmail && (
-                                    <div>
-                                        <div className="font-medium mb-2">最新の回答（メール毎）</div>
-                                        <div className="overflow-auto max-h-48 border rounded">
-                                            <table className="min-w-full text-sm"><thead className="bg-gray-100"><tr><th className="px-2 py-1 text-left">メール</th><th className="px-2 py-1 text-left">回答日時</th><th className="px-2 py-1 text-left">{details && details.scoreName ? details.scoreName : 'スコア'}</th></tr></thead>
-                                            <tbody>{details.latestPerEmail.map((r,ri)=>(<tr key={ri} className={`${ri%2===0?'bg-white':'bg-gray-50'}`}><td className="px-2 py-1 border-t">{r.email||'-'}</td><td className="px-2 py-1 border-t">{r.timestamp? new Date(r.timestamp).toLocaleString('ja-JP') : '-'}</td><td className="px-2 py-1 border-t">{r.scoreFormatted ? r.scoreFormatted : (r.score !== null && typeof r.score !== 'undefined' ? String(r.score) + (details && details.scoreUnit ? (' ' + details.scoreUnit) : '') : '-')}</td></tr>))}</tbody>
-                                            </table>
-                                        </div>
-                                    </div>
-                                )}
-
-                                {details && details.scoreStats && (
-                                    <div>
-                                        <div className="font-medium mb-2">スコア配分</div>
-                                        <div className="text-sm text-gray-600">件数: {details.scoreStats.count} / 平均: {details.scoreStats.avgFormatted || (Math.round((details.scoreStats.avg||0)*100)/100 + (details.scoreUnit ? (' ' + details.scoreUnit) : ''))} / 最小: {details.scoreStats.minFormatted || details.scoreStats.min} / 最大: {details.scoreStats.maxFormatted || details.scoreStats.max}</div>
-                                        <div className="mt-2 text-sm">
-                                            {Object.keys(details.scoreStats.distributionFormatted || {}).sort((a,b)=>Number(a.replace(/[^0-9]/g,'')) - Number(b.replace(/[^0-9]/g,''))).reverse().map(k=>(<div key={k} className="flex justify-between text-xs py-1 border-b"><div>{k}</div><div>{details.scoreStats.distributionFormatted[k]} 件</div></div>))}
-                                        </div>
-                                    </div>
-                                )}
-                                {details && !details.error && !details.response && !details.latestPerEmail && !details.scoreStats && (
-                                    <div className="text-gray-500">表示できる詳細がありません。</div>
-                                )}
-                            </div>
-                            </>
-                        )}
-                    </div>
-                </div>
-            );
-        }
 
         function App() {
             const [view, setView] = useState('loading');
@@ -484,6 +379,9 @@
                         <button onClick={() => setTab('survey')} className={`flex-1 py-3 text-center font-bold text-sm border-b-2 transition ${tab === 'survey' ? 'border-rose-600 text-rose-600 bg-white' : 'border-transparent text-gray-500 hover:bg-gray-100'}`}>
                             <i className="fas fa-poll mr-2"></i> アンケート
                         </button>
+                        <button onClick={() => setTab('collections')} className={`flex-1 py-3 text-center font-bold text-sm border-b-2 transition ${tab === 'collections' ? 'border-amber-600 text-amber-600 bg-white' : 'border-transparent text-gray-500 hover:bg-gray-100'}`}>
+                            <i className="fas fa-wallet mr-2"></i> 集金
+                        </button>
                     </div>
                     <div className="flex-1 overflow-hidden relative">
                         {tab === 'dm' && <DmTab user={user} authUrl={authUrl} />}
@@ -491,6 +389,100 @@
                         {tab === 'mypage' && <MyPage />}
                         {tab === 'roster' && <RosterTab user={user} />}
                         {tab === 'survey' && <SurveyTab user={user} />}
+                        {tab === 'collections' && <CollectTab user={user} />}
+                    </div>
+                </div>
+            );
+        }
+
+        function DetailsModal({ isOpen, loading, details, survey, onClose }) {
+            if (!isOpen) return null;
+            return (
+                <div className="fixed inset-0 flex items-center justify-center modal-overlay p-4 z-[210]">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl p-5">
+                        <div className="flex items-center justify-between mb-3">
+                            <h4 className="font-bold">詳細</h4>
+                            <button onClick={onClose} className="text-sm text-gray-500">閉じる</button>
+                        </div>
+                        {loading ? (
+                            <div className="flex items-center justify-center py-8"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mr-3"></div><div className="text-gray-600">読み込み中...</div></div>
+                        ) : details && details.error ? (
+                            <div className="text-red-600 p-3 bg-red-50 rounded">{details.error}</div>
+                        ) : (
+                            <div className="text-sm text-gray-700">
+                                <div className="mb-3 font-medium">{(survey && (survey.title || survey.spreadsheetRef)) || '詳細'}</div>
+                                {details.response ? (
+                                    (() => {
+                                        const resp = details.response || {};
+                                        const headers = details.headers || Object.keys(resp.answers || {});
+                                        const fmtDate = (ts) => { if (!ts) return '-'; try { const d = new Date(Number(ts)); return `${d.getFullYear()}/${('0'+(d.getMonth()+1)).slice(-2)}/${('0'+d.getDate()).slice(-2)} ${('0'+d.getHours()).slice(-2)}:${('0'+d.getMinutes()).slice(-2)}` } catch(e){ return String(ts); } };
+                                        return (
+                                            <div>
+                                                <div className="mb-2 text-xs text-gray-500">あなたの回答（行: {details.rowIndex})</div>
+                                                <div className="mb-3">
+                                                    <div className="text-sm font-semibold">回答日時</div>
+                                                    <div className="text-xs text-gray-700">{fmtDate(resp.timestamp)}</div>
+                                                </div>
+                                                {resp.scoreFormatted && (
+                                                    <div className="mb-3">
+                                                        <div className="text-sm font-semibold">スコア</div>
+                                                        <div className="text-xs text-gray-700">{resp.scoreFormatted}</div>
+                                                    </div>
+                                                )}
+                                                <div className="overflow-auto max-h-[50vh] border rounded bg-white p-2">
+                                                    <table className="min-w-full text-sm">
+                                                        <tbody>
+                                                            {headers.map((h, i) => (
+                                                                <tr key={i} className={`${i%2===0? 'bg-white':'bg-gray-50'}`}>
+                                                                    <td className="px-2 py-1 align-top font-medium w-1/3">{h}</td>
+                                                                    <td className="px-2 py-1 align-top">{resp.answers && (resp.answers[h] !== undefined ? String(resp.answers[h]) : '')}</td>
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+                                        );
+                                    })()
+                                ) : details.allResponses ? (
+                                    (() => {
+                                        const stats = details.scoreStats || {};
+                                        const latest = details.latestPerEmail || [];
+                                        return (
+                                            <div>
+                                                <div className="mb-3 grid grid-cols-2 gap-3">
+                                                    <div className="p-3 bg-gray-50 rounded">
+                                                        <div className="text-xs text-gray-500">合計回答数</div>
+                                                        <div className="font-bold text-lg">{stats.count || 0}</div>
+                                                    </div>
+                                                    <div className="p-3 bg-gray-50 rounded">
+                                                        <div className="text-xs text-gray-500">平均</div>
+                                                        <div className="font-bold text-lg">{stats.avgFormatted || '-'}</div>
+                                                    </div>
+                                                </div>
+                                                <div className="mb-2 font-medium">最新の回答（メールごと）</div>
+                                                <div className="overflow-auto max-h-[40vh] border rounded bg-white p-2">
+                                                    <table className="min-w-full text-sm">
+                                                        <thead className="bg-gray-100"><tr><th className="px-2 py-1 text-left">日時</th><th className="px-2 py-1 text-left">メール</th><th className="px-2 py-1 text-left">スコア</th></tr></thead>
+                                                        <tbody>
+                                                            {latest.map((r, i) => (
+                                                                <tr key={i} className={`${i%2===0? 'bg-white':'bg-gray-50'}`}>
+                                                                    <td className="px-2 py-1">{r.timestamp ? (new Date(Number(r.timestamp))).toLocaleString() : '-'}</td>
+                                                                    <td className="px-2 py-1">{r.email || '-'}</td>
+                                                                    <td className="px-2 py-1">{r.scoreFormatted || '-'}</td>
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+                                        );
+                                    })()
+                                ) : (
+                                    <div className="text-xs text-gray-500">表示できる詳細がありません。</div>
+                                )}
+                            </div>
+                        )}
                     </div>
                 </div>
             );
@@ -774,7 +766,15 @@
                         )}
                         {formEditOpen && (
                             <div className="fixed inset-0 flex items-center justify-center modal-overlay p-4 z-[230]">
-                                <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl p-5 max-h-[85vh] overflow-auto">
+                                <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl p-5 max-h-[85vh] overflow-auto relative">
+                                        {flowLoading && (
+                                            <div className="absolute inset-0 flex items-center justify-center bg-white/60 z-50">
+                                                <div className="flex flex-col items-center">
+                                                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-3"></div>
+                                                    <div className="text-sm text-gray-600">読み込み中…</div>
+                                                </div>
+                                            </div>
+                                        )}
                                     <div className="flex items-center justify-between mb-3">
                                         <h4 className="font-bold">アンケート登録 / 編集</h4>
                                         <button onClick={() => setFormEditOpen(false)} className="text-sm text-gray-500 hover:text-gray-700">閉じる</button>
@@ -837,6 +837,871 @@
                                 </div>
                             </div>
                         )}
+                    </div>
+                </div>
+            );
+        }
+
+        function CollectTab({ user }) {
+                    const [collections, setCollections] = useState([]);
+                    const [loading, setLoading] = useState(true);
+                    const [selectedId, setSelectedId] = useState('');
+                    const [summary, setSummary] = useState(null);
+                    const [modalOpen, setModalOpen] = useState(false);
+                    const [newMode, setNewMode] = useState('sheet'); // 'sheet' or 'forms'
+                    const [sheetUrl, setSheetUrl] = useState('');
+                    const [title, setTitle] = useState('');
+                    const [editingId, setEditingId] = useState('');
+                    const [editSelectOpen, setEditSelectOpen] = useState(false);
+                    const [editSelectLoading, setEditSelectLoading] = useState(false);
+                    const [formsList, setFormsList] = useState([]);
+                    const [formsLoading, setFormsLoading] = useState(false);
+                    const [savingCollection, setSavingCollection] = useState(false);
+                    const [regDoneOpen, setRegDoneOpen] = useState(false);
+                    const [regDoneMessage, setRegDoneMessage] = useState('');
+                    const [collectionsLoading, setCollectionsLoading] = useState(false);
+                    const [orgOptions, setOrgOptions] = useState({ orgs: [], deptMaster: [] });
+                    const [selectedOrg, setSelectedOrg] = useState('');
+                    const [selectedDept, setSelectedDept] = useState('');
+                    const [selectedFormRef, setSelectedFormRef] = useState('');
+                    const [accountingOpen, setAccountingOpen] = useState(false);
+                    const [accountTarget, setAccountTarget] = useState(null);
+                    const [accountDoneOpen, setAccountDoneOpen] = useState(false);
+                    const [accountDoneMessage, setAccountDoneMessage] = useState('');
+                    const [accountFlowOpen, setAccountFlowOpen] = useState(false);
+                    const [flowStep, setFlowStep] = useState('org'); // org -> grade -> person -> pay
+                    const [flowOrgList, setFlowOrgList] = useState([]);
+                    const [flowSelectedOrg, setFlowSelectedOrg] = useState('');
+                    const [flowGrades, setFlowGrades] = useState([]);
+                    const [flowSelectedGrade, setFlowSelectedGrade] = useState('');
+                    const [flowPeople, setFlowPeople] = useState([]);
+                    const [flowLoading, setFlowLoading] = useState(false);
+                    const [flowShowOnlyUnbalanced, setFlowShowOnlyUnbalanced] = useState(false);
+                    const [flowSelectedPerson, setFlowSelectedPerson] = useState(null);
+                    const [flowReceiveAmount, setFlowReceiveAmount] = useState(0);
+                    const [handlerNameMap, setHandlerNameMap] = useState({});
+                    const [recipientNameMap, setRecipientNameMap] = useState({});
+                    const [expandedCollectors, setExpandedCollectors] = useState({});
+                    const [selectCollectionOpen, setSelectCollectionOpen] = useState(false);
+                    const [debugMsg, setDebugMsg] = useState('');
+
+            useEffect(()=>{
+                setLoading(true);
+                const token = localStorage.getItem('slack_app_session');
+                runGas('ensureCollectionsSheets').catch(()=>{});
+                // initial lightweight load (dropdown will refresh on focus)
+                runGas('listCollections', token).then(res=>{ setCollections(res || []); }).catch(()=>{}).finally(()=>setLoading(false));
+            }, []);
+
+            const openNew = async () => {
+                setTitle(''); setSheetUrl(''); setNewMode('sheet'); setSelectedFormRef(''); setSelectedOrg(''); setSelectedDept(''); setEditingId('');
+                setModalOpen(true);
+                setFormsLoading(true);
+                try {
+                    const token = localStorage.getItem('slack_app_session');
+                    const formsRes = await runGas('listFormDefinitions', token).catch(()=>({ success: true, items: [] }));
+                    const opts = await runGas('getSearchOptions').catch(()=>({ orgs: [], deptMaster: [] }));
+                    if (formsRes && formsRes.success) setFormsList(formsRes.items || []); else setFormsList([]);
+                    if (opts) setOrgOptions({ orgs: opts.orgs || [], deptMaster: opts.deptMaster || [] });
+                } catch (e) {
+                    setFormsList([]);
+                } finally {
+                    setFormsLoading(false);
+                }
+            };
+
+            const saveNew = async () => {
+                setSavingCollection(true);
+                try {
+                    const token = localStorage.getItem('slack_app_session');
+                    // If selected source is Forms, validate importability (email & amount columns exist)
+                    if (newMode === 'forms' && sheetUrl) {
+                        const parsed = await runGas('parseSourceSpreadsheet', token, sheetUrl);
+                        if (!parsed || parsed.success === false) {
+                            // show error modal
+                            setRegDoneMessage('選択したソースはインポート要件を満たしていません:\n' + (parsed && parsed.message ? parsed.message : '不明なエラー'));
+                            setRegDoneOpen(true);
+                            setSavingCollection(false);
+                            return;
+                        }
+                    }
+                    // normalize '選択' placeholder to empty string when saving
+                    let orgVal = selectedOrg;
+                    let deptVal = selectedDept;
+                    if (orgVal === '選択' || orgVal === '選択してください') orgVal = '';
+                    if (deptVal === '選択' || deptVal === '選択してください') deptVal = '';
+                    const payload = { title: title || ('無題 ' + (new Date()).toLocaleString()), spreadsheetUrl: sheetUrl || '', inChargeOrg: orgVal || '', inChargeDept: deptVal || '' };
+                    if (editingId) {
+                        const res = await runGas('updateCollection', token, editingId, payload);
+                        if (!res || !res.success) throw new Error(res && res.message ? res.message : '更新に失敗しました');
+                        setRegDoneMessage('更新が完了しました');
+                    } else {
+                        const res = await runGas('createCollection', token, payload);
+                        if (!res || !res.success) throw new Error(res && res.message ? res.message : '作成に失敗しました');
+                        setRegDoneMessage('登録が完了しました');
+                    }
+                    const list = await runGas('listCollections', token);
+                    setCollections(list || []);
+                    setModalOpen(false);
+                    setEditingId('');
+                    setRegDoneOpen(true);
+                } catch (e) { setRegDoneMessage('エラー: ' + (e && e.message ? e.message : String(e))); setRegDoneOpen(true); }
+                finally { setSavingCollection(false); }
+            };
+
+            const deleteThisCollection = async () => {
+                if (!editingId) return;
+                if (!confirm('本当にこの集金を削除しますか？ この操作は取り消せません。')) return;
+                setSavingCollection(true);
+                try {
+                    const token = localStorage.getItem('slack_app_session');
+                    const res = await runGas('deleteCollection', token, editingId);
+                    if (!res || !res.success) throw new Error(res && res.message ? res.message : '削除に失敗しました');
+                    const list = await runGas('listCollections', token);
+                    setCollections(list || []);
+                    setModalOpen(false);
+                    setEditingId('');
+                    setRegDoneMessage('削除しました');
+                    setRegDoneOpen(true);
+                } catch (e) {
+                    setRegDoneMessage('エラー: ' + (e && e.message ? e.message : String(e)));
+                    setRegDoneOpen(true);
+                } finally {
+                    setSavingCollection(false);
+                }
+            };
+
+            const onSelect = async (id) => {
+                setSelectedId(id);
+                setSummary(null);
+                if (!id) return;
+                const token = localStorage.getItem('slack_app_session');
+                try {
+                    const res = await runGas('fetchCollectionSummary', token, id);
+                        try { setDebugMsg(JSON.stringify(res, null, 2)); } catch (ee) { setDebugMsg(String(res)); }
+                        setSummary(res);
+                        // fetch handler names for perCollector
+                        try {
+                            const handlers = (res && res.perCollector) ? res.perCollector.map(h=>h.handler).filter(Boolean).map(x=>x.toLowerCase()) : [];
+                            const unique = Array.from(new Set(handlers)).filter(Boolean);
+                            const map = {};
+                            for (const h of unique) {
+                                if (!h) continue;
+                                try {
+                                    const found = await runGas('searchRecipients', { query: h, status: 'all' });
+                                    if (found && found.length && found[0].name) map[h] = found[0].name;
+                                } catch(e) {}
+                            }
+                            setHandlerNameMap(map);
+                        } catch(e) { console.debug('handler name lookup failed', e); }
+                } catch (e) { setSummary({ error: e.message || e }); }
+            };
+
+            const openAccounting = (person) => {
+                // legacy single-person accounting (quick)
+                setAccountTarget(person);
+                setAccountingOpen(true);
+            };
+
+            const openAccountingFromEntry = async (email) => {
+                if (!email) return;
+                setFlowLoading(true);
+                try {
+                    const token = localStorage.getItem('slack_app_session');
+                    // refresh summary to ensure up-to-date info
+                    const res = await runGas('fetchCollectionSummary', token, selectedId);
+                    setSummary(res);
+                    const em = (email || '').toLowerCase();
+                    const entry = (res && res.perPerson) ? res.perPerson.find(p=> (p.email||'').toLowerCase() === em) : null;
+                    const name = recipientNameMap[em] || (entry && (entry.name || entry.displayName)) || email;
+                    if (entry) {
+                        setFlowSelectedPerson({ email: entry.email, name: name, grade: entry.grade, field: entry.field, department: entry.department });
+                        const expected = Number(entry.expected || 0);
+                        const collected = Number(entry.collected || 0);
+                        // initialize receive amount to the displayed magnitude
+                        setFlowReceiveAmount(Math.abs(expected - collected) || 0);
+                        setFlowStep('pay');
+                        setAccountFlowOpen(true);
+                    } else {
+                        // fallback to quick accounting
+                        setAccountTarget({ email: email, expected: 0, collected: 0 });
+                        setAccountingOpen(true);
+                    }
+                } catch (e) {
+                    alert(e && e.message ? e.message : String(e));
+                } finally {
+                    setFlowLoading(false);
+                }
+            };
+
+            const openAccountFlow = async () => {
+                setFlowStep('org');
+                setFlowSelectedOrg('');
+                setFlowSelectedGrade('');
+                setFlowPeople([]);
+                setFlowSelectedPerson(null);
+                setFlowShowOnlyUnbalanced(false);
+                setAccountFlowOpen(true);
+                try {
+                    const token = localStorage.getItem('slack_app_session');
+                    const opts = await runGas('getSearchOptions', token).catch(()=>({ orgs: [] }));
+                    setFlowOrgList(opts.orgs || []);
+                } catch(e) { setFlowOrgList([]); }
+            };
+
+            const loadPeopleForOrg = async (org) => {
+                setFlowPeople([]);
+                setFlowLoading(true);
+                try {
+                    const token = localStorage.getItem('slack_app_session');
+                    const res = await runGas('searchRecipients', { org: org, status: 'active' });
+                    const mapped = (res || []).map(r => ({ name: r.name, email: r.email, grade: r.grade, field: r.field, department: r.department }));
+                    setFlowPeople(mapped);
+                    // derive grades
+                    const grades = Array.from(new Set(mapped.map(m=>m.grade).filter(Boolean)));
+                    setFlowGrades(grades);
+                } catch(e) { setFlowPeople([]); setFlowGrades([]); }
+                finally { setFlowLoading(false); }
+            };
+
+            const selectPersonInFlow = async (person) => {
+                if (!person) return;
+                setFlowLoading(true);
+                try {
+                    setFlowSelectedPerson(person);
+                    // refresh summary to ensure latest values
+                    const token = localStorage.getItem('slack_app_session');
+                    const res = await runGas('fetchCollectionSummary', token, selectedId).catch(()=>null);
+                    if (res) setSummary(res);
+                    const entry = (res && res.perPerson && Array.isArray(res.perPerson)) ? res.perPerson.find(p=> (p.email||'').toLowerCase() === (person.email||'').toLowerCase()) : ((summary && summary.perPerson) ? summary.perPerson.find(p=> (p.email||'').toLowerCase() === (person.email||'').toLowerCase()) : null);
+                    const expected = entry ? Number(entry.expected || 0) : 0;
+                    const collected = entry ? Number(entry.collected || 0) : 0;
+                    // set initial receive amount equal to the displayed amount (magnitude)
+                    setFlowReceiveAmount(Math.abs(expected - collected));
+                    setFlowStep('pay');
+                } catch (e) {
+                    alert(e && e.message ? e.message : String(e));
+                } finally { setFlowLoading(false); }
+            };
+
+            const doFlowReceive = async (mode, label) => {
+                if (!flowSelectedPerson) return;
+                const token = localStorage.getItem('slack_app_session');
+                const handler = (user && user.email) ? user.email : '';
+                const collId = selectedId;
+                const email = flowSelectedPerson.email;
+                const entry = (summary && summary.perPerson) ? summary.perPerson.find(p=> (p.email||'').toLowerCase() === (email||'').toLowerCase()) : null;
+                const expected = entry ? Number(entry.expected || 0) : 0;
+                const val = Number(flowReceiveAmount || 0);
+                setFlowLoading(true);
+                try {
+                    if (mode === 'receive') {
+                        // record positive receipt (server expects positive amount for 支払)
+                        await runGas('recordPayment', token, collId, email, Math.abs(val), label || '受領', handler);
+                    } else if (mode === 'change') {
+                        // record received and change via server helper (received positive)
+                        await runGas('recordPaymentWithChange', token, collId, email, Math.abs(val), expected, handler);
+                    } else if (mode === 'debt') {
+                        const lbl = label || '過不足';
+                        if (lbl === '返金') {
+                            // server treats '返金' as negative, so send positive amount
+                            await runGas('recordPayment', token, collId, email, Math.abs(val), '返金', handler);
+                        } else {
+                            // 過不足扱い: record the received amount as-is under type '過不足'
+                            // (server will not flip sign for this type)
+                            await runGas('recordPayment', token, collId, email, Number(val || 0), '過不足', handler);
+                        }
+                    }
+                    // refresh summary
+                    const res = await runGas('fetchCollectionSummary', token, collId);
+                    setSummary(res);
+                    setAccountFlowOpen(false);
+                    setFlowStep('org');
+                    setAccountDoneMessage('登録が完了しました');
+                    setAccountDoneOpen(true);
+                } catch (e) { alert(e.message || e); }
+                finally { setFlowLoading(false); }
+            };
+
+            const doReceive = async (mode, label) => {
+                // mode: 'receive' | 'change' | 'debt'
+                if (!accountTarget) return;
+                setFlowLoading(true);
+                const token = localStorage.getItem('slack_app_session');
+                const handler = (user && user.email) ? user.email : '';
+                const collId = selectedId;
+                const expected = Number(accountTarget.expected || 0);
+                const collected = Number(accountTarget.collected || 0);
+                const remaining = expected - collected;
+                const input = document.getElementById('collect-input-amount');
+                const val = input ? Number(input.value || 0) : remaining;
+
+                try {
+                    if (mode === 'receive') {
+                        await runGas('recordPayment', token, collId, accountTarget.email, Math.abs(val), label || '受領', handler);
+                    } else if (mode === 'change') {
+                        await runGas('recordPaymentWithChange', token, collId, accountTarget.email, Math.abs(val), expected, handler);
+                    } else if (mode === 'debt') {
+                        const lbl = label || '過不足';
+                        if (lbl === '返金') {
+                            // send positive amount; server will negate for '返金'
+                            await runGas('recordPayment', token, collId, accountTarget.email, Math.abs(val), '返金', handler);
+                        } else {
+                            // 過不足扱い: record received amount as-is under '過不足'
+                            await runGas('recordPayment', token, collId, accountTarget.email, Number(val || 0), '過不足', handler);
+                        }
+                    }
+                    // refresh
+                    const res = await runGas('fetchCollectionSummary', token, collId);
+                    setSummary(res);
+                    setAccountingOpen(false);
+                    setAccountDoneMessage('登録が完了しました');
+                    setAccountDoneOpen(true);
+                } catch (e) { alert(e.message || e); }
+                finally { setFlowLoading(false); }
+            };
+
+            const fmt = (n) => {
+                const v = Number(n||0);
+                const abs = Math.abs(v).toLocaleString();
+                return v < 0 ? '△' + abs : abs;
+            };
+
+            return (
+                <div className="h-full overflow-auto p-4 bg-gray-50">
+                    <div className="max-w-4xl mx-auto bg-white rounded-lg shadow-sm p-6 h-full">
+                        <div className="flex items-start justify-between mb-4">
+                            <h3 className="text-xl font-bold">集金</h3>
+                                <div className="flex items-center gap-2">
+                                <button onClick={openNew} className="text-xs bg-green-100 text-green-900 px-3 py-1 rounded">新規登録</button>
+                                <button onClick={async ()=>{
+                                        setEditSelectOpen(true);
+                                        setEditSelectLoading(true);
+                                        try {
+                                            const token = localStorage.getItem('slack_app_session');
+                                            const list = await runGas('listCollections', token).catch(()=>[]);
+                                            setCollections(list || []);
+                                        } catch(e) { }
+                                        finally { setEditSelectLoading(false); }
+                                    }} className="text-xs bg-yellow-100 text-yellow-900 px-3 py-1 rounded">編集</button>
+                            </div>
+                        </div>
+
+                        <div className="mb-4">
+                            <label className="block text-sm mb-2">集金選択</label>
+                            <div className="flex gap-2">
+                                <button onClick={async ()=>{
+                                    setSelectCollectionOpen(true);
+                                    setCollectionsLoading(true);
+                                    try {
+                                        const token = localStorage.getItem('slack_app_session');
+                                        const list = await runGas('listCollections', token).catch(()=>[]);
+                                        setCollections(list || []);
+                                    } catch(e){} finally { setCollectionsLoading(false); }
+                                }} className="flex-1 text-left border p-2 rounded">{(collections.find(c=>c.id===selectedId) || { title: '選択してください' }).title}</button>
+                            </div>
+                            {collectionsLoading && <div className="text-xs text-gray-500 mt-1">一覧を更新しています…</div>}
+                        </div>
+
+                        {loading && <div className="text-gray-500">読み込み中...</div>}
+
+                        {summary && summary.success && (
+                            <div className="border rounded p-4 bg-white">
+                                <div className="mb-2">集金状況 {fmt(summary.collectedTotal)} / {fmt(summary.expectedTotal)}（{summary.collectedCount}人/{summary.expectedCount}人）</div>
+                                <div className="mt-2 space-y-2">
+                                    {(summary.perCollector || []).filter(c=>Number(c.total||0) !== 0).map((p,idx)=> (
+                                        <div key={idx} className="p-2 border rounded">
+                                            <div className="flex items-center justify-between">
+                                                <div><strong>{(handlerNameMap[(p.handler||'').toLowerCase()] || p.handler) || '（不明）'}</strong></div>
+                                                <div className="text-sm">{fmt(p.total)}</div>
+                                            </div>
+                                            <div className="pl-4 mt-2">
+                                                <div className="flex items-center justify-between"><div className="text-sm">取引件数</div><div className="text-sm">{(p.entries && p.entries.length) || '-'}</div></div>
+                                                <div className="mt-2">
+                                                    <button onClick={async ()=>{
+                                                        const key = (p.handler||'').toLowerCase();
+                                                        const emails = (p.entries||[]).map(e=> (e.email||'').toLowerCase()).filter(Boolean);
+                                                        const uniq = Array.from(new Set(emails)).filter(Boolean);
+                                                        const rmap = {};
+                                                        for (const em of uniq) {
+                                                            if (recipientNameMap[em]) { rmap[em] = recipientNameMap[em]; continue; }
+                                                            try {
+                                                                const found = await runGas('searchRecipients', { query: em, status: 'all' });
+                                                                if (found && found.length && found[0].name) rmap[em] = found[0].name;
+                                                            } catch(e) {}
+                                                        }
+                                                        setRecipientNameMap(prev=>({ ...prev, ...rmap }));
+                                                        setExpandedCollectors(prev=>({ ...prev, [key]: !prev[key] }));
+                                                    }} className="text-sm text-blue-600">詳細を表示</button>
+                                                </div>
+                                                {expandedCollectors[(p.handler||'').toLowerCase()] && (
+                                                    <div className="mt-3 space-y-2">
+                                                        {p.entries && p.entries.map((e,ei)=> {
+                                                            const em = (e.email||'').toLowerCase();
+                                                            const name = recipientNameMap[em] || e.name || e.email || '-';
+                                                            let affiliation = '-';
+                                                            try {
+                                                                const person = (summary && summary.perPerson) ? summary.perPerson.find(x => (x.email||'').toLowerCase() === em) : null;
+                                                                if (person) {
+                                                                    const parts = [];
+                                                                    if (person.inChargeOrg || person.org) parts.push(person.inChargeOrg || person.org);
+                                                                    if (person.department || person.inChargeDept) parts.push(person.department || person.inChargeDept);
+                                                                    affiliation = parts.filter(Boolean).join(' / ') || '-';
+                                                                }
+                                                            } catch(_) {}
+                                                            return (
+                                                            <div key={ei} role="button" tabIndex={0} onClick={() => openAccountingFromEntry(e.email)} className="p-2 border rounded bg-gray-50 text-sm cursor-pointer">
+                                                                <div className="flex justify-between items-start">
+                                                                    <div className="min-w-0">
+                                                                        <div className="font-medium truncate">{name}</div>
+                                                                        <div className="text-xs text-gray-500 truncate">{affiliation}</div>
+                                                                    </div>
+                                                                    <div className="text-xs ml-3">{e.timestamp ? new Date(e.timestamp).toLocaleString('ja-JP') : '-'}</div>
+                                                                </div>
+                                                                <div className="flex justify-between mt-1"><div className="text-xs">{e.type}</div><div className="text-sm">{fmt(e.amount)}</div></div>
+                                                            </div>
+                                                        )})}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Large account button between summary and debug */}
+                        {summary && summary.success && (
+                            <div className="my-4">
+                                <button onClick={openAccountFlow} className="w-full bg-amber-600 text-white text-xl py-4 rounded-lg shadow-md">会計</button>
+                            </div>
+                        )}
+
+                        {summary && summary.error && <div className="text-red-600">{summary.error}</div>}
+                        {debugMsg ? (
+                            <div className="mt-3 p-3 bg-gray-50 border rounded text-xs text-gray-700 whitespace-pre-wrap overflow-auto max-h-40">
+                                <div className="font-bold text-sm mb-2">DEBUG (server response)</div>
+                                <pre className="text-xs">{debugMsg}</pre>
+                            </div>
+                        ) : null}
+
+                        {/* New Collection Modal */}
+                        {modalOpen && (
+                            <div className="fixed inset-0 flex items-center justify-center modal-overlay p-4 z-[220]">
+                                <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg p-5">
+                                    <div className="flex items-center justify-between mb-3"><h4 className="font-bold">集金登録</h4><button onClick={()=>setModalOpen(false)} className="text-sm text-gray-500">閉じる</button></div>
+                                    <div className="space-y-3">
+                                        <div>
+                                            <label className="block text-xs text-gray-500 mb-1">ソース選択</label>
+                                            <select disabled className="w-full border p-2 rounded" value={newMode}>
+                                                <option value="sheet">スプレッドシートURLから登録</option>
+                                                <option value="forms">Formsから選択</option>
+                                            </select>
+                                        </div>
+                                        {formsLoading ? (
+                                            <div className="flex flex-col items-center justify-center py-8"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div><div className="text-sm text-gray-600">読み込み中...</div></div>
+                                        ) : (
+                                        <>
+                                        {newMode === 'sheet' ? (
+                                            <div>
+                                                <label className="block text-xs text-gray-500 mb-1">スプレッドシートURL</label>
+                                                <input className="w-full border p-2 rounded" value={sheetUrl} onChange={e=>setSheetUrl(e.target.value)} />
+                                            </div>
+                                        ) : (
+                                            <div>
+                                                <label className="block text-xs text-gray-500 mb-1">Formsから選択</label>
+                                                <select className="w-full border p-2 rounded" value={selectedFormRef} onChange={(e)=>{
+                                                    const v = e.target.value; setSelectedFormRef(v);
+                                                    const sel = (formsList || []).find(f => (f.spreadsheetRef||f.formUrl||'') === v);
+                                                    if (sel) {
+                                                        setSheetUrl(sel.spreadsheetRef || sel.formUrl || '');
+                                                        if (!title) setTitle(sel.title || '');
+                                                        setSelectedOrg(sel.inChargeOrg || '');
+                                                        setSelectedDept(sel.inChargeDept || '');
+                                                    } else {
+                                                        setSheetUrl('');
+                                                        setSelectedOrg(''); setSelectedDept('');
+                                                    }
+                                                }}>
+                                                    <option value="">選択してください</option>
+                                                    {formsList.map((f,idx)=>(<option key={idx} value={(f.spreadsheetRef || f.formUrl || '')}>{(f.title || f.spreadsheetRef || f.formUrl)}</option>))}
+                                                </select>
+                                                <div className={`mt-2 ${selectedFormRef ? 'opacity-80' : ''}`}>
+                                                    <label className="block text-xs text-gray-500 mb-1">選択中のスプレッドシートURL</label>
+                                                    <input className="w-full border p-2 rounded bg-gray-50" value={sheetUrl} disabled />
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            <div>
+                                                <label className="block text-xs text-gray-500 mb-1">担当局</label>
+                                                <select className="w-full border p-2 rounded" value={selectedOrg} onChange={e=>{ setSelectedOrg(e.target.value); setSelectedDept(''); }}>
+                                                    <option value="">選択</option>
+                                                    {(orgOptions && orgOptions.orgs ? Array.from(new Set(orgOptions.orgs)) : []).map((o2,idx)=>(<option key={idx} value={o2}>{o2}</option>))}
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs text-gray-500 mb-1">担当部門</label>
+                                                <select className="w-full border p-2 rounded" value={selectedDept} onChange={e=>setSelectedDept(e.target.value)} disabled={!selectedOrg}>
+                                                    <option value="">選択</option>
+                                                    {(orgOptions && orgOptions.deptMaster ? Array.from(new Set(orgOptions.deptMaster.filter(d=>d.org===selectedOrg).map(d=>d.dept))) : []).map((d2,idx)=>(<option key={idx} value={d2}>{d2}</option>))}
+                                                </select>
+                                            </div>
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-xs text-gray-500 mb-1">タイトル</label>
+                                            <input className="w-full border p-2 rounded" value={title} onChange={e=>setTitle(e.target.value)} />
+                                        </div>
+                                        </>
+                                        )}
+                                        <div className="flex items-center justify-end gap-2 mt-3">
+                                            {editingId ? (
+                                                <button onClick={deleteThisCollection} disabled={savingCollection} className={`px-3 py-1 rounded text-white ${savingCollection ? 'bg-gray-400' : 'bg-red-600 hover:bg-red-700'}`}>
+                                                    {savingCollection ? (<span><i className="fas fa-spinner fa-spin mr-2"></i>処理中...</span>) : '削除'}
+                                                </button>
+                                            ) : null}
+                                            <button onClick={()=>{ setModalOpen(false); setEditingId(''); }} className="px-3 py-1 bg-gray-100 rounded">キャンセル</button>
+                                            <button onClick={saveNew} disabled={savingCollection} className={`px-3 py-1 rounded text-white ${savingCollection ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'}`}>
+                                                {savingCollection ? (<span><i className="fas fa-spinner fa-spin mr-2"></i>登録中...</span>) : '登録'}
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        <DialogModal isOpen={regDoneOpen} type={'notify'} message={regDoneMessage} onOk={() => { setRegDoneOpen(false); setRegDoneMessage(''); }} onCancel={() => { setRegDoneOpen(false); setRegDoneMessage(''); }} />
+
+                        {/* Edit Select Modal */}
+                        {editSelectOpen && (
+                            <div className="fixed inset-0 flex items-center justify-center modal-overlay p-4 z-[225]">
+                                <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl p-5 max-h-[80vh] overflow-auto">
+                                    <div className="flex items-center justify-between mb-3">
+                                        <h4 className="font-bold">集金一覧を選択</h4>
+                                        <button onClick={()=>setEditSelectOpen(false)} className="text-sm text-gray-500">閉じる</button>
+                                    </div>
+                                    {editSelectLoading ? (
+                                        <div className="flex items-center justify-center py-12"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-gray-900 mr-3"></div><div className="text-gray-600">読み込み中...</div></div>
+                                    ) : (
+                                    <div className="divide-y">
+                                        {(collections || []).length === 0 && <div className="text-sm text-gray-500">登録済みの集金がありません。</div>}
+                                        {(collections || []).map((c, idx) => (
+                                            <div key={c.id || idx} className="py-3 flex items-center justify-between cursor-pointer" onClick={async ()=>{
+                                                // open modal for editing with spinner while loading forms/options
+                                                setEditingId(c.id || '');
+                                                setTitle(c.title || '');
+                                                setSheetUrl(c.spreadsheetUrl || '');
+                                                setSelectedOrg(c.inChargeOrg || '');
+                                                setSelectedDept(c.inChargeDept || '');
+                                                setEditSelectOpen(false);
+                                                setModalOpen(true);
+                                                setFormsLoading(true);
+                                                try {
+                                                    const token = localStorage.getItem('slack_app_session');
+                                                    const formsRes = await runGas('listFormDefinitions', token).catch(()=>({ success: true, items: [] }));
+                                                    const opts = await runGas('getSearchOptions').catch(()=>({ orgs: [], deptMaster: [] }));
+                                                    if (formsRes && formsRes.success) setFormsList(formsRes.items || []); else setFormsList([]);
+                                                    if (opts) setOrgOptions({ orgs: opts.orgs || [], deptMaster: opts.deptMaster || [] });
+                                                } catch(e) { setFormsList([]); }
+                                                finally { setFormsLoading(false); }
+                                            }}>
+                                                <div className="min-w-0">
+                                                    <div className="font-medium truncate">{c.title || c.spreadsheetUrl || '無題'}</div>
+                                                    <div className="text-xs text-gray-500 truncate">{(c.inChargeOrg || '-') + (c.inChargeDept ? (' / ' + c.inChargeDept) : '')}</div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
+                        {selectCollectionOpen && (
+                            <div className="fixed inset-0 flex items-center justify-center modal-overlay p-4 z-[225]">
+                                <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl p-5 max-h-[80vh] overflow-auto">
+                                    <div className="flex items-center justify-between mb-3">
+                                        <h4 className="font-bold">集金を選択</h4>
+                                        <button onClick={()=>setSelectCollectionOpen(false)} className="text-sm text-gray-500">閉じる</button>
+                                    </div>
+                                    {collectionsLoading ? (
+                                        <div className="flex items-center justify-center py-12"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-gray-900 mr-3"></div><div className="text-gray-600">読み込み中...</div></div>
+                                    ) : (
+                                    <div className="divide-y">
+                                        {(collections || []).length === 0 && <div className="text-sm text-gray-500">登録済みの集金がありません。</div>}
+                                        {(collections || []).map((c, idx) => (
+                                            <div key={c.id || idx} className="py-3 flex items-center justify-between cursor-pointer" onClick={async ()=>{
+                                                setSelectedId(c.id || '');
+                                                setSelectCollectionOpen(false);
+                                                setSummary(null);
+                                                try {
+                                                    const token = localStorage.getItem('slack_app_session');
+                                                    const res = await runGas('fetchCollectionSummary', token, c.id || '');
+                                                    try { setDebugMsg(JSON.stringify(res, null, 2)); } catch (ee) { setDebugMsg(String(res)); }
+                                                    setSummary(res);
+                                                } catch (e) { setSummary({ error: e && e.message ? e.message : String(e) }); }
+                                            }}>
+                                                <div className="min-w-0">
+                                                    <div className="font-medium truncate">{c.title || c.spreadsheetUrl || '無題'}</div>
+                                                    <div className="text-xs text-gray-500 truncate">{(c.inChargeOrg || '-') + (c.inChargeDept ? (' / ' + c.inChargeDept) : '')}</div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Accounting Modal (multi-step: org -> grade -> person -> pay) */}
+                        {accountFlowOpen && (
+                            <div className="fixed inset-0 flex items-center justify-center modal-overlay p-4 z-[230]">
+                                <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl p-5 max-h-[85vh] overflow-auto">
+                                    <div className="flex items-center justify-between mb-3">
+                                        <h4 className="font-bold">会計</h4>
+                                        <div className="flex items-center gap-2">
+                                            <button onClick={()=>{ setAccountFlowOpen(false); setFlowStep('org'); }} className="text-sm text-gray-500">閉じる</button>
+                                        </div>
+                                    </div>
+
+                                    <div className="mb-4 text-sm text-gray-600">手順: 所属局 → 学年 → 対象者 → 支払</div>
+
+                                    {flowStep === 'org' && (
+                                        <div>
+                                            <div className="font-medium mb-2">所属局を選択</div>
+                                            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                                                {(flowOrgList || []).map((o, oi) => (
+                                                    <button key={oi} onClick={async ()=>{ setFlowSelectedOrg(o); try { await loadPeopleForOrg(o); setFlowStep('grade'); } catch(e){ setFlowPeople([]); setFlowStep('grade'); } }} className="text-left px-3 py-2 border rounded hover:bg-gray-50">{o}</button>
+                                                ))}
+                                                {(flowOrgList || []).length === 0 && <div className="text-xs text-gray-500">所属局が見つかりません。</div>}
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {flowStep === 'grade' && (
+                                        <div>
+                                            <div className="flex items-center justify-between mb-2">
+                                                <div className="font-medium">学年を選択 — <span className="text-xs text-gray-500">{flowSelectedOrg}</span></div>
+                                                <div>
+                                                    <button onClick={()=>{ setFlowStep('org'); setFlowSelectedOrg(''); setFlowGrades([]); setFlowPeople([]); }} className="text-xs text-gray-400">戻る</button>
+                                                </div>
+                                            </div>
+                                            <div className="flex flex-wrap gap-2">
+                                                {(flowGrades || []).map((g, gi) => (
+                                                    <button key={gi} onClick={()=>{ setFlowSelectedGrade(g); setFlowStep('person'); }} className="px-3 py-2 border rounded hover:bg-gray-50">{g}</button>
+                                                ))}
+                                                {(flowGrades || []).length === 0 && <div className="text-xs text-gray-500">学年データがありません。</div>}
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {flowStep === 'person' && (
+                                        <div>
+                                            <div className="flex items-center justify-between mb-2">
+                                                <div className="font-medium">対象者一覧 — <span className="text-xs text-gray-500">{flowSelectedOrg} {flowSelectedGrade}</span></div>
+                                                <div className="flex items-center gap-2">
+                                                    <label className="text-sm flex items-center gap-2"><input type="checkbox" checked={flowShowOnlyUnbalanced} onChange={(e)=>setFlowShowOnlyUnbalanced(e.target.checked)} /> 過不足なしを含む</label>
+                                                    <button onClick={()=>setFlowStep('grade')} className="text-xs text-gray-400">戻る</button>
+                                                </div>
+                                            </div>
+                                            <div className="space-y-2">
+                                                {(() => {
+                                                    const filtered = (flowPeople || []).filter(p => (!flowSelectedGrade || p.grade === flowSelectedGrade));
+                                                    const boxed = filtered.filter(p => {
+                                                        // checkbox means "過不足なしを含む" (when checked include zero-diff persons)
+                                                        if (flowShowOnlyUnbalanced) return true; // include all
+                                                        // otherwise, hide persons whose expected - collected == 0
+                                                        if (!summary || !summary.perPerson) return false;
+                                                        const e = summary.perPerson.find(x => (x.email||'').toLowerCase() === (p.email||'').toLowerCase());
+                                                        if (!e) return false;
+                                                        return Number(e.expected || 0) !== Number(e.collected || 0);
+                                                    });
+                                                    if (boxed.length === 0) return (<div className="text-sm text-gray-500">対象者が見つかりません。</div>);
+                                                    return boxed.map((p, pi) => {
+                                                        const e = summary && summary.perPerson ? summary.perPerson.find(x => (x.email||'').toLowerCase() === (p.email||'').toLowerCase()) : null;
+                                                        const expected = e ? Number(e.expected || 0) : 0;
+                                                        const collected = e ? Number(e.collected || 0) : 0;
+                                                        const diff = expected - collected;
+                                                        const label = (() => {
+                                                            if (!e || (e.entries || []).length === 0) return '請求額';
+                                                            if (diff > 0) return '不足';
+                                                            if (diff < 0) return '過払い';
+                                                            return '差額';
+                                                        })();
+                                                        return (
+                                                            <div key={pi} role="button" tabIndex={0} onClick={() => selectPersonInFlow(p)} className="p-2 border rounded flex items-center justify-between cursor-pointer">
+                                                                <div>
+                                                                    <div className="font-medium">{p.name || p.email}</div>
+                                                                    <div className="text-xs text-gray-500">{p.grade || '-'} / {p.field || '-'} / {p.department || '-'}</div>
+                                                                </div>
+                                                                <div className="text-right">
+                                                                    <div className="text-2xl font-bold">{fmt(Math.abs(diff))}</div>
+                                                                    <div className="text-xs text-gray-500 mt-1">{label}</div>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    });
+                                                })()}
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {flowStep === 'pay' && flowSelectedPerson && (
+                                        <div>
+                                            {flowLoading && (
+                                                <div className="absolute inset-0 flex items-center justify-center bg-white/60 z-50">
+                                                    <div className="flex flex-col items-center">
+                                                        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-3"></div>
+                                                        <div className="text-sm text-gray-600">読み込み中…</div>
+                                                    </div>
+                                                </div>
+                                            )}
+                                            <div className="mb-3">
+                                                <div className="text-center mb-3">
+                                                    <div className="text-lg font-bold">{flowSelectedPerson.name || flowSelectedPerson.email}</div>
+                                                    <div className="text-sm text-gray-600">学年: {flowSelectedPerson.grade || '-'} / 分野: {flowSelectedPerson.field || '-'} / 所属: {flowSelectedPerson.department || '-'}</div>
+                                                </div>
+                                                <div className="text-center mb-3">
+                                                    {(() => {
+                                                        const entry = summary && summary.perPerson ? summary.perPerson.find(x => (x.email||'').toLowerCase() === (flowSelectedPerson.email||'').toLowerCase()) : null;
+                                                        const expected = entry ? Number(entry.expected || 0) : 0;
+                                                        const collected = entry ? Number(entry.collected || 0) : 0;
+                                                        const diff = expected - collected;
+                                                        const label = (!entry || (entry.entries || []).length === 0) ? '請求額' : (diff > 0 ? '不足' : (diff < 0 ? '過払い' : '差額'));
+                                                        return (
+                                                            <>
+                                                                <div className="text-3xl font-extrabold">{fmt(Math.abs(diff))}</div>
+                                                                <div className="text-sm text-gray-600 mt-1">{label}</div>
+                                                            </>
+                                                        );
+                                                    })()}
+                                                </div>
+                                                <div className="mb-3">
+                                                    <label className="block text-xs text-gray-500 mb-1">受取額</label>
+                                                    <input type="number" value={flowReceiveAmount || 0} onChange={(e)=>setFlowReceiveAmount(Number(e.target.value || 0))} className="w-full border p-2 rounded" />
+                                                </div>
+                                                <div>
+                                                    {(() => {
+                                                        const entry = summary && summary.perPerson ? summary.perPerson.find(x => (x.email||'').toLowerCase() === (flowSelectedPerson.email||'').toLowerCase()) : null;
+                                                        const expected = entry ? Number(entry.expected || 0) : 0;
+                                                        const collected = entry ? Number(entry.collected || 0) : 0;
+                                                        const diff = expected - collected; // positive: owes money; negative: overpaid
+                                                        const remaining = Math.abs(diff);
+                                                        const received = Number(flowReceiveAmount || 0);
+
+                                                        // Rules:
+                                                        // - received > 0 and diff >= 0:
+                                                        //     received <= diff => 受領
+                                                        //     received > diff => おつり / 過不足扱い
+                                                        // - received > 0 and diff < 0: already overpaid => 返金 / 過不足扱い
+                                                        // - received < 0 and diff > 0: 不足 (過不足扱い)
+                                                        // - received < 0 and diff <= 0: 返金
+
+                                                        if (received > 0 && diff >= 0 && received <= diff) {
+                                                            return (
+                                                                <div className="flex">
+                                                                    <button onClick={()=>doFlowReceive('receive')} className="w-full text-lg py-4 bg-blue-600 text-white rounded-lg">{fmt(received)}円 受領</button>
+                                                                </div>
+                                                            );
+                                                        }
+
+                                                        if (received > 0 && diff >= 0 && received > diff) {
+                                                            return (
+                                                                <div className="space-y-2">
+                                                                    <button onClick={()=>doFlowReceive('change')} className="w-full text-lg py-3 bg-gray-200 text-gray-900 rounded">{fmt(received - diff)}円 おつり</button>
+                                                                    <button onClick={()=>doFlowReceive('debt','過不足')} className="w-full text-lg py-3 bg-yellow-200 text-gray-900 rounded">{fmt(Math.abs(received - diff))}円 過不足扱い（後日精算）</button>
+                                                                </div>
+                                                            );
+                                                        }
+
+                                                        if (received > 0 && diff < 0) {
+                                                            return (
+                                                                <div className="space-y-2">
+                                                                    <button onClick={()=>doFlowReceive('debt','返金')} className="w-full text-lg py-3 bg-gray-200 text-gray-900 rounded">{fmt(received)}円 返金</button>
+                                                                    <button onClick={()=>doFlowReceive('debt','過不足')} className="w-full text-lg py-3 bg-yellow-200 text-gray-900 rounded">{fmt(Math.abs(diff + received))}円 過不足扱い（後日精算）</button>
+                                                                </div>
+                                                            );
+                                                        }
+
+                                                        if (received < 0) {
+                                                            if (diff > 0) {
+                                                                return (
+                                                                    <div className="flex">
+                                                                        <button onClick={()=>doFlowReceive('debt','過不足')} className="w-full text-lg py-3 bg-yellow-200 text-gray-900 rounded">{fmt(Math.abs(received))}円 過不足扱い（後日精算）</button>
+                                                                    </div>
+                                                                );
+                                                            }
+                                                            // received < 0 and diff <= 0 => refund
+                                                            return (
+                                                                <div className="flex">
+                                                                    <button onClick={()=>doFlowReceive('debt','返金')} className="w-full text-lg py-3 bg-gray-200 text-gray-900 rounded">{fmt(Math.abs(received))}円 返金</button>
+                                                                </div>
+                                                            );
+                                                        }
+
+                                                        // fallback: show receive button
+                                                        return (
+                                                            <div className="flex">
+                                                                <button onClick={()=>doFlowReceive('receive')} className="w-full text-lg py-4 bg-blue-600 text-white rounded-lg">{fmt(received)}円 受領</button>
+                                                            </div>
+                                                        );
+                                                    })()}
+                                                </div>
+                                                <div className="mt-3 text-right"><button onClick={()=>setFlowStep('person')} className="text-xs text-gray-400">戻る</button></div>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Quick single-person Accounting Modal (legacy) */}
+                        {accountingOpen && accountTarget && (
+                            <div className="fixed inset-0 flex items-center justify-center modal-overlay p-4 z-[235]">
+                                <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-5">
+                                    <div className="flex items-center justify-between mb-3"><h4 className="font-bold">支払い</h4><button onClick={()=>setAccountingOpen(false)} className="text-sm text-gray-500">閉じる</button></div>
+                                                {flowLoading && (
+                                                                            <div className="absolute inset-0 flex items-center justify-center bg-white/60 z-50">
+                                                                                <div className="flex flex-col items-center">
+                                                                                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-3"></div>
+                                                                                    <div className="text-sm text-gray-600">処理中…</div>
+                                                                                </div>
+                                                                            </div>
+                                                                        )}
+                                                                        <div className="text-center mb-3">
+                                                                            <div className="text-lg font-bold">{(accountTarget && (accountTarget.name || accountTarget.email)) || '-'}</div>
+                                                                            <div className="text-sm text-gray-600">{(accountTarget && (accountTarget.department || accountTarget.inChargeDept)) || ''}</div>
+                                                                            <div className="text-xl font-bold mt-2">{fmt(accountTarget.expected - accountTarget.collected)}</div>
+                                                                        </div>
+                                                                        <div className="mb-3">
+                                                                            <label className="block text-xs text-gray-500 mb-1">受取額</label>
+                                                                            <input id="collect-input-amount" type="number" defaultValue={Math.abs(accountTarget.expected - accountTarget.collected)} className="w-full border p-2 rounded" />
+                                                                        </div>
+                                                                        <div className="flex items-center gap-2 justify-end">
+                                                                            <button className="px-3 py-1 bg-blue-600 text-white rounded" onClick={()=>doReceive('receive')}>受領</button>
+                                                                            {(() => {
+                                                                                const remaining = Number(accountTarget.expected || 0) - Number(accountTarget.collected || 0);
+                                                                                if (remaining < 0) {
+                                                                                    // already overpaid: offer refund or adjustment
+                                                                                    return (
+                                                                                        <>
+                                                                                            <button className="px-3 py-1 bg-gray-200 rounded" onClick={()=>doReceive('debt','返金')}>返金</button>
+                                                                                            <button className="px-3 py-1 bg-yellow-200 rounded" onClick={()=>doReceive('debt','過不足')}>過不足扱い（後日返金）</button>
+                                                                                        </>
+                                                                                    );
+                                                                                }
+                                                                                // normal case: offer change
+                                                                                return (<button className="px-3 py-1 bg-gray-200 rounded" onClick={()=>doReceive('change')}>おつり</button>);
+                                                                            })()}
+                                                                            <button className="px-3 py-1 bg-yellow-200 rounded" onClick={()=>doReceive('debt','過不足')}>過不足扱い（後日返金）</button>
+                                                                        </div>
+                                </div>
+                            </div>
+                        )}
+                        <DialogModal isOpen={accountDoneOpen} type={'notify'} message={accountDoneMessage} onOk={() => { setAccountDoneOpen(false); setAccountDoneMessage(''); }} onCancel={() => { setAccountDoneOpen(false); setAccountDoneMessage(''); }} />
                     </div>
                 </div>
             );
@@ -2223,24 +3088,34 @@
                         </div>
                         {result.failed.length > 0 && (
                             <div className="flex-1 overflow-y-auto bg-red-50 p-4 rounded-lg mb-4 text-sm border border-red-100">
-                                <ul className="space-y-3">
-                                    {result.failed.map((f, i) => (
-                                        <li key={i}>
-                                            <div className="font-bold">{f.name}</div>
-                                            <div className="text-xs text-red-500">{f.error}</div>
-                                        </li>
+                                <div className="mt-2 space-y-2">
+                                    {result.failed.map((f, idx) => (
+                                        <div key={idx} className="p-2 border rounded">
+                                            <div className="font-medium">{f.email || f.name || ('行 ' + (f.row || idx+1))}</div>
+                                            <div className="text-xs text-red-600 mt-1">{f.error || (f.message || JSON.stringify(f))}</div>
+                                        </div>
                                     ))}
-                                </ul>
+                                </div>
+                                <div className="flex justify-end mt-3"><button onClick={onClose} className="px-4 py-2 bg-blue-600 text-white rounded">閉じる</button></div>
                             </div>
                         )}
-                        <button onClick={onClose} className="w-full bg-gray-800 text-white py-3 rounded-lg font-bold hover:bg-gray-900 transition active:scale-95">閉じる</button>
                     </div>
                 </div>
             );
         }
 
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
+        // Mount the React app into #root
+        try {
+            const rootEl = document.getElementById('root');
+            if (rootEl && ReactDOM && ReactDOM.createRoot) {
+                ReactDOM.createRoot(rootEl).render(<App />);
+            } else if (rootEl && ReactDOM) {
+                ReactDOM.render(<App />, rootEl);
+            }
+        } catch (e) {
+            console.error('Failed to mount React app', e);
+        }
+
     </script>
 </body>
 </html>
