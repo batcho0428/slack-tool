@@ -876,6 +876,7 @@
                     const [flowGrades, setFlowGrades] = useState([]);
                     const [flowSelectedGrade, setFlowSelectedGrade] = useState('');
                     const [flowPeople, setFlowPeople] = useState([]);
+                    const [flowPeopleCache, setFlowPeopleCache] = useState({});
                     const [flowLoading, setFlowLoading] = useState(false);
                     const [flowShowOnlyUnbalanced, setFlowShowOnlyUnbalanced] = useState(false);
                     const [flowSelectedPerson, setFlowSelectedPerson] = useState(null);
@@ -977,31 +978,37 @@
                 }
             };
 
-            const refreshSummary = async (idOverride, showLoading = true) => {
+            const refreshSummary = async (idOverride, options = {}) => {
                 const id = idOverride || selectedId;
-                if (!id) return;
+                if (!id) return null;
+                const showLoading = (typeof options.showLoading === 'boolean') ? options.showLoading : true;
+                const fetchHandlerNames = (typeof options.fetchHandlerNames === 'boolean') ? options.fetchHandlerNames : true;
                 if (showLoading) setSummaryLoading(true);
                 const token = localStorage.getItem('slack_app_session');
                 try {
                     const res = await runGas('fetchCollectionSummary', token, id);
                     try { setDebugMsg(JSON.stringify(res, null, 2)); } catch (ee) { setDebugMsg(String(res)); }
                     setSummary(res);
-                    // fetch handler names for perCollector
-                    try {
-                        const handlers = (res && res.perCollector) ? res.perCollector.map(h=>h.handler).filter(Boolean).map(x=>x.toLowerCase()) : [];
-                        const unique = Array.from(new Set(handlers)).filter(Boolean);
-                        const map = {};
-                        for (const h of unique) {
-                            if (!h) continue;
-                            try {
-                                const found = await runGas('searchRecipients', { query: h, status: 'all' });
-                                if (found && found.length && found[0].name) map[h] = found[0].name;
-                            } catch(e) {}
-                        }
-                        setHandlerNameMap(map);
-                    } catch(e) { console.debug('handler name lookup failed', e); }
+                    if (fetchHandlerNames) {
+                        // fetch handler names for perCollector
+                        try {
+                            const handlers = (res && res.perCollector) ? res.perCollector.map(h=>h.handler).filter(Boolean).map(x=>x.toLowerCase()) : [];
+                            const unique = Array.from(new Set(handlers)).filter(Boolean);
+                            const map = {};
+                            for (const h of unique) {
+                                if (!h) continue;
+                                try {
+                                    const found = await runGas('searchRecipients', { query: h, status: 'all' });
+                                    if (found && found.length && found[0].name) map[h] = found[0].name;
+                                } catch(e) {}
+                            }
+                            setHandlerNameMap(map);
+                        } catch(e) { console.debug('handler name lookup failed', e); }
+                    }
+                    return res;
                 } catch (e) {
                     setSummary({ error: e.message || e });
+                    return null;
                 } finally {
                     if (showLoading) setSummaryLoading(false);
                 }
@@ -1032,10 +1039,10 @@
                 if (!email) return;
                 setFlowLoading(true);
                 try {
-                    const token = localStorage.getItem('slack_app_session');
-                    // refresh summary to ensure up-to-date info
-                    const res = await runGas('fetchCollectionSummary', token, selectedId);
-                    setSummary(res);
+                    let res = summary;
+                    if (!res || !res.success || !selectedId) {
+                        res = await refreshSummary(selectedId, { showLoading: false, fetchHandlerNames: false });
+                    }
                     const em = (email || '').toLowerCase();
                     const entry = (res && res.perPerson) ? res.perPerson.find(p=> (p.email||'').toLowerCase() === em) : null;
                     const name = recipientNameMap[em] || (entry && (entry.name || entry.displayName)) || email;
@@ -1069,15 +1076,20 @@
                 setFlowSelectedPerson(null);
                 setFlowShowOnlyUnbalanced(false);
                 setAccountFlowOpen(true);
-                setFlowLoading(true);
-                try {
-                    if (selectedId) await refreshSummary(selectedId, false);
-                } catch(e) { setFlowOrgList([]); }
-                finally { setFlowLoading(false); }
+                if (selectedId) {
+                    // always recalc amounts when opening accounting flow (async)
+                    refreshSummary(selectedId, { showLoading: false, fetchHandlerNames: false }).catch(()=>{});
+                }
             };
 
             const loadPeopleForOrg = async (org) => {
                 setFlowPeople([]);
+                const cached = flowPeopleCache[org];
+                if (cached && cached.people) {
+                    setFlowPeople(cached.people || []);
+                    setFlowGrades(cached.grades || []);
+                    return;
+                }
                 setFlowLoading(true);
                 try {
                     const token = localStorage.getItem('slack_app_session');
@@ -1087,6 +1099,7 @@
                     // derive grades
                     const grades = Array.from(new Set(mapped.map(m=>m.grade).filter(Boolean)));
                     setFlowGrades(grades);
+                    setFlowPeopleCache(prev => ({ ...prev, [org]: { people: mapped, grades: grades } }));
                 } catch(e) { setFlowPeople([]); setFlowGrades([]); }
                 finally { setFlowLoading(false); }
             };
@@ -1096,11 +1109,11 @@
                 setFlowLoading(true);
                 try {
                     setFlowSelectedPerson(person);
-                    // refresh summary to ensure latest values
-                    const token = localStorage.getItem('slack_app_session');
-                    const res = await runGas('fetchCollectionSummary', token, selectedId).catch(()=>null);
-                    if (res) setSummary(res);
-                    const entry = (res && res.perPerson && Array.isArray(res.perPerson)) ? res.perPerson.find(p=> (p.email||'').toLowerCase() === (person.email||'').toLowerCase()) : ((summary && summary.perPerson) ? summary.perPerson.find(p=> (p.email||'').toLowerCase() === (person.email||'').toLowerCase()) : null);
+                    let res = summary;
+                    if (!res || !res.success) {
+                        res = await refreshSummary(selectedId, { showLoading: false, fetchHandlerNames: false });
+                    }
+                    const entry = (res && res.perPerson && Array.isArray(res.perPerson)) ? res.perPerson.find(p=> (p.email||'').toLowerCase() === (person.email||'').toLowerCase()) : null;
                     const expected = entry ? Number(entry.expected || 0) : 0;
                     const collected = entry ? Number(entry.collected || 0) : 0;
                     const diff = expected - collected;
@@ -1213,7 +1226,7 @@
                         </div>
 
                         <div className="mb-4">
-                            <label className="block text-sm mb-2">集金選択</label>
+                            <h4>集金選択</h4>
                             <div className="flex gap-2 flex-wrap">
                                 <button onClick={async ()=>{
                                     setSelectCollectionOpen(true);
@@ -1230,10 +1243,17 @@
 
                         {loading && <div className="text-gray-500">読み込み中...</div>}
 
+                        {/* Large account button between summary and debug */}
+                        {summary && summary.success && (
+                            <div className="my-4">
+                                <button onClick={openAccountFlow} className="w-full bg-amber-600 text-white text-xl py-4 rounded-lg shadow-md">会計</button>
+                            </div>
+                        )}
+
                         {summary && summary.success && (
                             <div className="border rounded p-4 bg-white">
                                 <div className="flex items-center justify-between gap-3 mb-2">
-                                    <div>集金状況<br /> {fmt(summary.collectedTotal)}円 / {fmt(summary.expectedTotal)}円（{summary.collectedCount}人/{summary.expectedCount}人）</div>
+                                    <div><h4>集金状況</h4><br /> {fmt(summary.collectedTotal)}円 / {fmt(summary.expectedTotal)}円（{summary.collectedCount}人/{summary.expectedCount}人）</div>
                                     <button onClick={() => refreshSummary()} className="text-xs bg-gray-100 px-3 py-2 rounded">再読み込み</button>
                                 </div>
                                 {summaryLoading && <div className="text-xs text-gray-500 mb-2">読み込み中...</div>}
@@ -1299,12 +1319,7 @@
                             </div>
                         )}
 
-                        {/* Large account button between summary and debug */}
-                        {summary && summary.success && (
-                            <div className="my-4">
-                                <button onClick={openAccountFlow} className="w-full bg-amber-600 text-white text-xl py-4 rounded-lg shadow-md">会計</button>
-                            </div>
-                        )}
+
 
                         {summary && summary.error && <div className="text-red-600">{summary.error}</div>}
                         {debugMsg ? (
@@ -1483,7 +1498,7 @@
                         {accountFlowOpen && (
                             <div className="fixed inset-0 flex items-center justify-center modal-overlay p-4 z-[230]">
                                 <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl p-5 max-h-[85vh] overflow-auto relative">
-                                    {flowLoading && (
+                                    {(flowLoading && (flowStep === 'person' || flowStep === 'pay')) && (
                                         <div className="absolute inset-0 flex items-center justify-center bg-white/60 z-50">
                                             <div className="flex flex-col items-center">
                                                 <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-3"></div>
@@ -1498,14 +1513,16 @@
                                         </div>
                                     </div>
 
-                                    <div className="mb-4 text-sm text-gray-600">手順: 所属局 → 学年 → 対象者 → 支払</div>
-
                                     {flowStep === 'org' && (
                                         <div>
                                             <div className="font-medium mb-2">所属局を選択</div>
                                             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                                                 {(flowOrgList || []).map((o, oi) => (
-                                                    <button key={oi} onClick={async ()=>{ setFlowSelectedOrg(o); try { await loadPeopleForOrg(o); setFlowStep('grade'); } catch(e){ setFlowPeople([]); setFlowStep('grade'); } }} className="text-left px-3 py-3 border rounded-lg hover:bg-gray-50 text-base md:text-sm">{o}</button>
+                                                    <button key={oi} onClick={()=>{
+                                                        setFlowSelectedOrg(o);
+                                                        setFlowStep('grade');
+                                                        loadPeopleForOrg(o).catch(()=>{ setFlowPeople([]); });
+                                                    }} className="text-left px-3 py-3 border rounded-lg hover:bg-gray-50 text-base md:text-sm">{o}</button>
                                                 ))}
                                                 {(flowOrgList || []).length === 0 && <div className="text-xs text-gray-500">所属局が見つかりません。</div>}
                                             </div>
@@ -1557,7 +1574,7 @@
                                                         const collected = e ? Number(e.collected || 0) : 0;
                                                         const diff = expected - collected;
                                                         const label = (() => {
-                                                            if (!e || (e.entries || []).length === 0) return '請求額';
+                                                            if (!e || (e.entries || []).length === 0) return '請求';
                                                             if (diff > 0) return '不足';
                                                             if (diff < 0) return '返金';
                                                             return '差額';
@@ -1592,27 +1609,34 @@
                                                 </div>
                                             )}
                                             <div className="mb-3">
-                                                <div className="text-center mb-3">
-                                                    <div className="text-lg font-bold">{flowSelectedPerson.name || flowSelectedPerson.email}</div>
-                                                </div>
-                                                <div className="text-center mb-3">
-                                                    {(() => {
-                                                        const entry = summary && summary.perPerson ? summary.perPerson.find(x => (x.email||'').toLowerCase() === (flowSelectedPerson.email||'').toLowerCase()) : null;
-                                                        const expected = entry ? Number(entry.expected || 0) : 0;
-                                                        const collected = entry ? Number(entry.collected || 0) : 0;
-                                                        const diff = expected - collected;
-                                                        const label = (!entry || (entry.entries || []).length === 0) ? '請求額' : (diff > 0 ? '不足' : (diff < 0 ? '返金' : '差額'));
-                                                        return (
-                                                            <>
-                                                                <div className={`text-3xl font-extrabold ${(label === '不足' || label === '返金') ? 'text-red-600' : ''}`}>{fmt(Math.abs(diff))}</div>
-                                                                <div className={`text-sm mt-1 ${(label === '不足' || label === '返金') ? 'text-red-600 font-bold' : 'text-gray-600'}`}>{label}</div>
-                                                            </>
-                                                        );
-                                                    })()}
-                                                </div>
+                                                {(() => {
+                                                    const entry = summary && summary.perPerson ? summary.perPerson.find(x => (x.email||'').toLowerCase() === (flowSelectedPerson.email||'').toLowerCase()) : null;
+                                                    const expected = entry ? Number(entry.expected || 0) : 0;
+                                                    const collected = entry ? Number(entry.collected || 0) : 0;
+                                                    const diff = expected - collected;
+                                                    const label = (!entry || (entry.entries || []).length === 0) ? '請求' : (diff > 0 ? '不足' : (diff < 0 ? '返金' : '差額'));
+                                                    const alert = (label === '不足' || label === '返金');
+                                                    return (
+                                                        <>
+                                                            <div className="flex justify-center mb-3">
+                                                                <div className="transform rotate-180 text-xs text-gray-500 flex flex-col items-center gap-1">
+                                                                    <div className="text-2xl font-bold">{flowSelectedPerson.name || flowSelectedPerson.email}</div>
+                                                                    <div className={`text-3xl font-extrabold ${alert ? 'text-red-600' : ''}`}>{fmt(Math.abs(diff))}</div>
+                                                                    <div className={`text-sm ${alert ? 'text-red-600 font-bold' : 'text-gray-600'}`}>{label}</div>
+                                                                </div>
+                                                            </div>
+                                                            <hr />
+                                                            <div className="text-center space-y-1 mb-3">
+                                                                <div className="text-lg font-bold">{flowSelectedPerson.name || flowSelectedPerson.email}</div>
+                                                                <div className={`text-3xl font-extrabold ${alert ? 'text-red-600' : ''}`}>{fmt(Math.abs(diff))}</div>
+                                                                <div className={`text-sm ${alert ? 'text-red-600 font-bold' : 'text-gray-600'}`}>{label}</div>
+                                                            </div>
+                                                        </>
+                                                    );
+                                                })()}
                                                 <div className="mb-3">
                                                     <label className="block text-xs text-gray-500 mb-1">受取額</label>
-                                                    <input type="number" value={flowReceiveAmount || 0} onChange={(e)=>setFlowReceiveAmount(Number(e.target.value || 0))} className="w-full border p-2 rounded" />
+                                                    <input type="number" inputMode="numeric" value={flowReceiveAmount || 0} onChange={(e)=>setFlowReceiveAmount(Number(e.target.value || 0))} className="w-full border p-2 rounded" />
                                                 </div>
                                                 <div>
                                                     {(() => {
@@ -1620,15 +1644,7 @@
                                                         const expected = entry ? Number(entry.expected || 0) : 0;
                                                         const collected = entry ? Number(entry.collected || 0) : 0;
                                                         const diff = expected - collected; // positive: owes money; negative: overpaid
-                                                        const remaining = Math.abs(diff);
                                                         const received = Number(flowReceiveAmount || 0);
-
-                                                        // Rules:
-                                                        // - received >= 0:
-                                                        //     received <= diff (when diff >= 0) => 受領
-                                                        //     otherwise => おつり / 過不足扱い
-                                                        // - received < 0:
-                                                        //     返金のみ
 
                                                         if (received < 0) {
                                                             return (
@@ -1679,12 +1695,32 @@
                                                                             </div>
                                                                         )}
                                                                         <div className="text-center mb-3">
-                                                                            <div className="text-lg font-bold">{(accountTarget && (accountTarget.name || accountTarget.email)) || '-'}</div>
-                                                                            <div className={`text-xl font-bold mt-2 ${((accountTarget && Number(accountTarget.expected || 0) - Number(accountTarget.collected || 0) !== 0) ? 'text-red-600' : '')}`}>{fmt(accountTarget.expected - accountTarget.collected)}</div>
+                                                                            {(() => {
+                                                                                const diff = Number(accountTarget.expected || 0) - Number(accountTarget.collected || 0);
+                                                                                const label = (diff > 0) ? '不足' : (diff < 0 ? '返金' : '差額');
+                                                                                const alert = (label === '不足' || label === '返金');
+                                                                                return (
+                                                                                    <>
+                                                                                        <div className="flex justify-center mb-3">
+                                                                                            <div className="transform rotate-180 text-xs text-gray-500 flex flex-col items-center gap-1">
+                                                                                                <div className="text-2xl font-bold">{flowSelectedPerson.name || flowSelectedPerson.email}</div>
+                                                                                                <div className={`text-3xl font-extrabold ${alert ? 'text-red-600' : ''}`}>{fmt(Math.abs(diff))}</div>
+                                                                                                <div className={`text-sm ${alert ? 'text-red-600 font-bold' : 'text-gray-600'}`}>{label}</div>
+                                                                                            </div>
+                                                                                        </div>
+                                                                                        <hr />
+                                                                                        <div className="space-y-1">
+                                                                                            <div className="text-lg font-bold">{(accountTarget && (accountTarget.name || accountTarget.email)) || '-'}</div>
+                                                                                            <div className={`text-2xl font-bold ${alert ? 'text-red-600' : ''}`}>{fmt(Math.abs(diff))}</div>
+                                                                                            <div className={`text-xs ${alert ? 'text-red-600 font-bold' : 'text-gray-600'}`}>{label}</div>
+                                                                                        </div>
+                                                                                    </>
+                                                                                );
+                                                                            })()}
                                                                         </div>
                                                                         <div className="mb-3">
                                                                             <label className="block text-xs text-gray-500 mb-1">受取額</label>
-                                                                            <input id="collect-input-amount" type="number" value={quickReceiveAmount || 0} onChange={(e)=>setQuickReceiveAmount(Number(e.target.value || 0))} className="w-full border p-2 rounded" />
+                                                                            <input id="collect-input-amount" type="number" inputMode="numeric" value={quickReceiveAmount || 0} onChange={(e)=>setQuickReceiveAmount(Number(e.target.value || 0))} className="w-full border p-2 rounded" />
                                                                         </div>
                                                                         <div className="flex items-center gap-2 justify-end">
                                                                             {(() => {
