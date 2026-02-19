@@ -1504,6 +1504,8 @@ function createRosterCsv(sessionToken, params) {
 
     // フィルタ処理 (status: 'active'|'retired'|'all'), grade, field
     const statusFilter = (filter && filter.status) ? filter.status : 'active';
+    const gradeFilter = (filter && typeof filter.grade !== 'undefined') ? filter.grade : null;
+    const fieldFilter = (filter && typeof filter.field !== 'undefined') ? filter.field : null;
     if ((statusFilter === 'retired' || statusFilter === 'all') && !isAdmin) {
       throw new Error('退局者または全員の出力は管理者のみ可能です');
     }
@@ -1512,8 +1514,20 @@ function createRosterCsv(sessionToken, params) {
     for (let i = 1; i < usersData.length; i++) {
       const row = usersData[i];
       if (!row[COL.EMAIL]) continue;
-      if (filter && filter.grade) { if ((row[COL.GRADE] || '') !== String(filter.grade)) continue; }
-      if (filter && filter.field) { if ((row[COL.FIELD] || '') !== String(filter.field)) continue; }
+      if (gradeFilter) {
+        if (Array.isArray(gradeFilter)) {
+          if (gradeFilter.length > 0 && gradeFilter.indexOf(String(row[COL.GRADE] || '')) === -1) continue;
+        } else {
+          if ((row[COL.GRADE] || '') !== String(gradeFilter)) continue;
+        }
+      }
+      if (fieldFilter) {
+        if (Array.isArray(fieldFilter)) {
+          if (fieldFilter.length > 0 && fieldFilter.indexOf(String(row[COL.FIELD] || '')) === -1) continue;
+        } else {
+          if ((row[COL.FIELD] || '') !== String(fieldFilter)) continue;
+        }
+      }
 
       let include = false;
       if (statusFilter === 'all') include = true;
@@ -1692,12 +1706,42 @@ function createRosterCsv(sessionToken, params) {
       } catch (e) { /* ignore */ }
     }
 
-    const finalHeaders = headersOut.concat(surveyAppendHeaders);
+    // optionally append collection payment summary to the right of roster (join by email)
+    let collectionAppendHeaders = [];
+    let collectionByEmail = {};
+    if (params && params.collectionId) {
+      try {
+        const sum = fetchCollectionSummary(sessionToken, params.collectionId);
+        if (sum && sum.success && Array.isArray(sum.perPerson)) {
+          collectionAppendHeaders = ['請求額', '受領額', '過不足'];
+          sum.perPerson.forEach(p => {
+            const em = String(p.email || '').trim().toLowerCase();
+            if (!em) return;
+            const expected = Number(p.expected || 0);
+            const collected = Number(p.collected || 0);
+            const diff = collected - expected;
+            collectionByEmail[em] = [expected, collected, diff];
+          });
+        }
+      } catch (e) {
+        // ignore collection append errors
+      }
+    }
+
+    const finalHeaders = headersOut.concat(surveyAppendHeaders).concat(collectionAppendHeaders);
     const finalRows = formattedOutRows.map((r, i) => {
-      if (!surveyAppendHeaders.length) return r;
-      const email = String(filteredRows[i][COL.EMAIL] || '').trim().toLowerCase();
-      const extra = surveyByEmail[email] ? surveyByEmail[email].values : new Array(surveyAppendHeaders.length).fill('');
-      return r.concat(extra);
+      let out = r.slice();
+      if (surveyAppendHeaders.length) {
+        const email = String(filteredRows[i][COL.EMAIL] || '').trim().toLowerCase();
+        const extra = surveyByEmail[email] ? surveyByEmail[email].values : new Array(surveyAppendHeaders.length).fill('');
+        out = out.concat(extra);
+      }
+      if (collectionAppendHeaders.length) {
+        const email = String(filteredRows[i][COL.EMAIL] || '').trim().toLowerCase();
+        const extra = collectionByEmail[email] ? collectionByEmail[email] : new Array(collectionAppendHeaders.length).fill('');
+        out = out.concat(extra);
+      }
+      return out;
     });
 
     const rows = [];
@@ -2445,6 +2489,52 @@ function parseSourceSpreadsheet(spreadsheetRef) {
   return { success: true, headers, rows, emailColumn: emailIdx, amountColumn: amountIdx, duplicateEmails: dupEmails };
 }
 
+function getCollectionRowDetails(sessionToken, collectionId, recipientEmail) {
+  const login = getLoginUser(sessionToken);
+  if (!login || login.status !== 'authorized') throw new Error('認証されていません');
+  if (!collectionId || !recipientEmail) return { success: false, message: 'パラメータが不足しています' };
+  ensureCollectionsSheets();
+  const ss = SpreadsheetApp.openById(getSpreadsheetId());
+  const s = ss.getSheetByName(SHEET_COLLECTIONS);
+  const lr = s.getLastRow();
+  if (lr < 2) return { success: false, message: 'Collectionsが空です' };
+  const rows = s.getRange(2,1,lr-1, HEADER_COLLECTIONS.length).getValues();
+  const found = rows.find(r => String(r[0]||'') === String(collectionId));
+  if (!found) return { success:false, message: '指定のCollectionが見つかりません' };
+  const spreadsheetUrl = String(found[2] || '');
+  const sid = _extractSpreadsheetId(spreadsheetUrl) || spreadsheetUrl;
+  if (!sid) return { success: false, message: 'スプレッドシートIDが取得できません' };
+  let target;
+  try { target = SpreadsheetApp.openById(sid); } catch (e) { return { success:false, message: 'スプレッドシートを開けません: '+ String(e) }; }
+  const sheet = target.getSheets()[0];
+  const data = sheet.getDataRange().getValues();
+  if (!data || data.length < 1) return { success: false, message: 'スプレッドシートが空です' };
+  const headers = (data[0] || []).map(c => String(c||''));
+  const emailPatterns = ['メールアドレス','メール','アドレス','Email','E-mail','e-mail'];
+  const amountPatterns = ['金額','集金額','支払金額','請求額','スコア','score','amount'];
+  const emailMatches = _findHeaderIndices(headers, emailPatterns);
+  const amountMatches = _findHeaderIndices(headers, amountPatterns);
+  if (emailMatches.length === 0) return { success:false, message: 'メールアドレス列が見つかりません' };
+  if (amountMatches.length === 0) return { success:false, message: '金額列が見つかりません' };
+  if (emailMatches.length > 1) return { success:false, message: 'メールアドレス列が複数見つかりました' };
+  if (amountMatches.length > 1) return { success:false, message: '金額列が複数見つかりました' };
+  const emailIdx = emailMatches[0];
+  const amountIdx = amountMatches[0];
+  const targetEmail = String(recipientEmail || '').trim().toLowerCase();
+  let matchedRow = null;
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    const mail = String(row[emailIdx]||'').trim().toLowerCase();
+    if (mail && mail === targetEmail) {
+      matchedRow = row;
+      break;
+    }
+  }
+  if (!matchedRow) return { success:false, message: '該当メールの行が見つかりません' };
+  const rowValues = matchedRow.map(v => _safeValueForClient(v));
+  return { success: true, headers: headers, row: rowValues, emailColumn: emailIdx, amountColumn: amountIdx };
+}
+
 function fetchCollectionSummary(sessionToken, collectionId) {
   // log start
   try { const ssLog = SpreadsheetApp.openById(getSpreadsheetId()); const ls = ssLog.getSheetByName(SHEET_LOGS) || ssLog.insertSheet(SHEET_LOGS); ls.appendRow([new Date(), 'fetchCollectionSummary', sessionToken || '', 'start', collectionId]); } catch(e){}
@@ -2550,22 +2640,27 @@ function recordPayment(sessionToken, collectionId, recipientEmail, amount, type,
   const sl = ss.getSheetByName(SHEET_COLLECTIONS_LOG);
   const ts = new Date();
   const a = Number(amount) || 0;
-  const row = [collectionId, ts, recipientEmail || '', type || '支払', a, handlerEmail || ''];
+  const row = [collectionId, ts, recipientEmail || '', type || '受領', a, handlerEmail || ''];
   sl.appendRow(row);
   return { success: true };
 }
 
 function recordPaymentWithChange(sessionToken, collectionId, recipientEmail, receivedAmount, expectedAmount, handlerEmail) {
-  // receivedAmount: actual received (positive). expectedAmount: expected. We record full received as 支払, then record おつり as negative if needed.
+  // receivedAmount: actual received (positive). expectedAmount: base amount (initial receive). We record full received as 受領, then record おつり as negative if needed.
   ensureCollectionsSheets();
   const ss = SpreadsheetApp.openById(getSpreadsheetId());
   const sl = ss.getSheetByName(SHEET_COLLECTIONS_LOG);
   const ts = new Date();
   const r = Number(receivedAmount) || 0;
-  const e = Number(expectedAmount) || 0;
+  const base = Number(expectedAmount) || 0;
   // record full received
-  sl.appendRow([collectionId, ts, recipientEmail || '', '支払', r, handlerEmail || '']);
-  const change = r - e;
+  sl.appendRow([collectionId, ts, recipientEmail || '', '受領', r, handlerEmail || '']);
+  if (base === 0 && r !== 0) {
+    // when expected is zero, refund the full amount as change
+    sl.appendRow([collectionId, ts, recipientEmail || '', 'おつり', -Math.abs(r), handlerEmail || '']);
+    return { success: true };
+  }
+  const change = r - base;
   if (change > 0) {
     // record change as おつり with negative amount
     sl.appendRow([collectionId, ts, recipientEmail || '', 'おつり', -Math.abs(change), handlerEmail || '']);
