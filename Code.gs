@@ -58,6 +58,15 @@ function getScriptProperty(key) {
   return PropertiesService.getScriptProperties().getProperty(key);
 }
 
+function _normalizeSlackCredential(value) {
+  const s = String(value || '').trim();
+  if (!s) return '';
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    return s.slice(1, -1).trim();
+  }
+  return s;
+}
+
 /**
  * Debug helper: probe Forms sheet rows and report whether target spreadsheet and form can be opened.
  * Returns array of { rowIndex, rawA, rawB, spreadsheetId, ssOpen:bool, ssError, formOpen:bool, formError }
@@ -368,18 +377,61 @@ function installTriggers() {
   if (!exists) ScriptApp.newTrigger(triggerFuncName).forSpreadsheet(ss).onEdit().create();
 }
 
+function _getFrontendRedirectBaseUrl() {
+  const raw = String(getScriptProperty('FRONTEND_REDIRECT_URL') || '').trim();
+  if (!raw) throw new Error('FRONTEND_REDIRECT_URL を Script Properties に設定してください');
+  if (/script\.google\.com\/macros\//i.test(raw)) {
+    throw new Error('FRONTEND_REDIRECT_URL には ngrok フロントのURLを設定してください');
+  }
+  return raw;
+}
+
+function _getFrontendOAuthCallbackUrl() {
+  const base = _getFrontendRedirectBaseUrl().replace(/\/+$/, '');
+  return base + '/auth/slack/callback';
+}
+
+function _buildRedirectHtml(targetUrl) {
+  const safeTarget = String(targetUrl || '').trim();
+  return HtmlService.createHtmlOutput(`
+    <html>
+      <head>
+        <meta charset="UTF-8" />
+        <meta http-equiv="refresh" content="0; url=${safeTarget}" />
+        <script>
+          window.top.location.replace('${safeTarget}');
+        </script>
+      </head>
+      <body>Redirecting...</body>
+    </html>
+  `).setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
 /* --------------------------------------------------------------------------
  * Webアプリ & OAuthエンドポイント
  * -------------------------------------------------------------------------- */
 function doGet(e) {
-  if (e.parameter.code) return handleSlackCallback(e.parameter.code);
-  let html = HtmlService.createHtmlOutputFromFile('index').getContent();
-  html = html.replace(/{{APP_NAME}}/g, APP_NAME);
-  html = html.replace(/{{APP_HEADER_COLOR}}/g, APP_HEADER_COLOR);
-  return HtmlService.createHtmlOutput(html)
-    .setTitle(APP_NAME)
-    .addMetaTag('viewport', 'width=device-width, initial-scale=1')
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  try {
+    const baseUrl = _getFrontendRedirectBaseUrl();
+    const p = (e && e.parameter) ? e.parameter : {};
+    if (p.code || p.error) {
+      const callbackUrl = _getFrontendOAuthCallbackUrl();
+      const query = [];
+      if (p.code) query.push('code=' + encodeURIComponent(String(p.code)));
+      if (p.state) query.push('state=' + encodeURIComponent(String(p.state)));
+      if (p.error) query.push('error=' + encodeURIComponent(String(p.error)));
+      if (p.error_description) query.push('error_description=' + encodeURIComponent(String(p.error_description)));
+      const target = callbackUrl + (query.length ? ('?' + query.join('&')) : '');
+      return _buildRedirectHtml(target);
+    }
+
+    return _buildRedirectHtml(baseUrl);
+  } catch (err) {
+    return HtmlService
+      .createHtmlOutput('FRONTEND_REDIRECT_URL を ngrok フロントURLで設定してください。')
+      .setTitle(APP_NAME)
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  }
 }
 
 /* --------------------------------------------------------------------------
@@ -486,7 +538,7 @@ function requestLoginOtp(email) {
 
     // DM送信（plain text と blocks 両方でリンクを表示する）
     const plainText = `【${APP_NAME}】認証コード: *${otp}*\nこのコードを画面に入力してください。(有効期限10分)`;
-    const shareUrl = getScriptProperty('SHAREABLE_URL');;
+    const shareUrl = _getFrontendRedirectBaseUrl();
     const blocks = [
       { type: 'section', text: { type: 'mrkdwn', text: plainText } },
       { type: 'section', text: { type: 'mrkdwn', text: `または、以下のリンクを開いてください。\n<${shareUrl}>` } }
@@ -548,30 +600,36 @@ function verifyLoginOtp(email, code) {
  * 2. OAuth関連 (PCからのログイン用 - Tokensシートに対応)
  * -------------------------------------------------------------------------- */
 function getAuthUrl() {
-  const clientId = getScriptProperty('SLACK_CLIENT_ID');
-  const scriptUrl = ScriptApp.getService().getUrl();
+  const clientId = _normalizeSlackCredential(getScriptProperty('SLACK_CLIENT_ID'));
+  const redirectUri = _getFrontendOAuthCallbackUrl();
   const userScopes = ["chat:write", "users:read", "users:read.email", "channels:read", "groups:read", "channels:write", "groups:write"].join(",");
-  return `https://slack.com/oauth/v2/authorize?client_id=${clientId}&user_scope=${userScopes}&redirect_uri=${encodeURIComponent(scriptUrl)}`;
+  return `https://slack.com/oauth/v2/authorize?client_id=${clientId}&user_scope=${userScopes}&redirect_uri=${encodeURIComponent(redirectUri)}`;
 }
 
 function getScriptUrl() { return ScriptApp.getService().getUrl(); }
 
-function handleSlackCallback(code) {
-  const clientId = getScriptProperty('SLACK_CLIENT_ID');
-  const clientSecret = getScriptProperty('SLACK_CLIENT_SECRET');
-  const scriptUrl = ScriptApp.getService().getUrl();
+function handleSlackOAuthCode(code, redirectUri) {
+  const clientId = _normalizeSlackCredential(getScriptProperty('SLACK_CLIENT_ID'));
+  const clientSecret = _normalizeSlackCredential(getScriptProperty('SLACK_CLIENT_SECRET'));
+  const expectedRedirectUri = _getFrontendOAuthCallbackUrl();
+  const actualRedirectUri = String(redirectUri || expectedRedirectUri).trim() || expectedRedirectUri;
 
-  if (!clientId || !clientSecret) return HtmlService.createHtmlOutput("システムエラー: Slack API設定不足");
+  if (!clientId || !clientSecret) {
+    return { success: false, message: 'システムエラー: Slack API設定不足' };
+  }
+  if (actualRedirectUri !== expectedRedirectUri) {
+    return { success: false, message: '不正なredirect_uriです' };
+  }
 
   const options = {
     method: "post",
-    payload: { client_id: clientId, client_secret: clientSecret, code: code, redirect_uri: scriptUrl }
+    payload: { client_id: clientId, client_secret: clientSecret, code: code, redirect_uri: expectedRedirectUri }
   };
 
   try {
     const res = UrlFetchApp.fetch("https://slack.com/api/oauth.v2.access", options);
     const json = JSON.parse(res.getContentText());
-    if (!json.ok) return HtmlService.createHtmlOutput(`Slack認証エラー: ${json.error}`);
+    if (!json.ok) return { success: false, message: `Slack認証エラー: ${json.error}` };
 
     const userSlackToken = json.authed_user.access_token;
     const slackUserId = json.authed_user.id;
@@ -580,7 +638,7 @@ function handleSlackCallback(code) {
       headers: { "Authorization": "Bearer " + userSlackToken }
     });
     const infoJson = JSON.parse(infoRes.getContentText());
-    if (!infoJson.ok) return HtmlService.createHtmlOutput(`ユーザー情報取得エラー: ${infoJson.error}`);
+    if (!infoJson.ok) return { success: false, message: `ユーザー情報取得エラー: ${infoJson.error}` };
 
     const userEmailRaw = infoJson.user.profile.email;
     const userEmail = String(userEmailRaw || '').trim().toLowerCase();
@@ -591,7 +649,9 @@ function handleSlackCallback(code) {
     const userData = usersSheet.getDataRange().getValues();
     const userExists = userData.some((r, i) => i > 0 && String(r[COL.EMAIL] || '').trim().toLowerCase() === userEmail);
 
-    if (!userExists) return HtmlService.createHtmlOutput(`<h2 style="color:red; text-align:center;">未登録ユーザー (${userEmail})</h2>`);
+    if (!userExists) {
+      return { success: false, message: `未登録ユーザー (${userEmail})` };
+    }
 
     // セッションとトークンを別々に保存
     const newSessionToken = Utilities.getUuid();
@@ -604,93 +664,17 @@ function handleSlackCallback(code) {
     tokensByEmail[userEmail] = { slackToken: userSlackToken, created: now };
     _saveStore(TOKENS_BY_EMAIL_PROP_KEY, tokensByEmail);
 
-    return HtmlService.createHtmlOutput(`
-    <html>
-      <head>
-        <meta charset="UTF-8">
-        <style>
-          body {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            background: #f3f4f6;
-            margin: 0;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', Meiryo, sans-serif;
-          }
-          .container {
-            background: white;
-            padding: 40px;
-            border-radius: 10px;
-            text-align: center;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            max-width: 400px;
-            width: 90%;
-          }
-          h2 {
-            color: #059669;
-            margin: 0 0 30px 0;
-          }
-          p {
-            color: #6b7280;
-            margin-bottom: 20px;
-            font-size: 14px;
-          }
-          button {
-            background-color: #2563eb;
-            color: white;
-            padding: 12px 32px;
-            border: none;
-            border-radius: 8px;
-            font-weight: bold;
-            font-size: 14px;
-            cursor: pointer;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            transition: background-color 0.3s;
-            display: none;
-          }
-          button:hover {
-            background-color: #1d4ed8;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <h2>連携完了</h2>
-          <p>認証が完了しました。ツールへ戻るをクリックしてください。</p>
-          <button id="toolButton" onclick="redirectToTool()">ツールへ戻る</button>
-          <script>
-            const sessionToken = '${newSessionToken}';
-            const scriptUrl = '${scriptUrl}';
+    return { success: true, sessionToken: newSessionToken, email: userEmail };
+  } catch (e) {
+    return { success: false, message: `システムエラー: ${e.message}` };
+  }
+}
 
-            function redirectToTool() {
-              localStorage.setItem('slack_app_session', sessionToken);
-              if (scriptUrl) {
-                window.top.location.href = scriptUrl;
-              } else {
-                window.location.reload();
-              }
-            }
-
-            // 2秒後に自動リダイレクト
-            setTimeout(function() {
-              localStorage.setItem('slack_app_session', sessionToken);
-              if (scriptUrl) {
-                window.top.location.href = scriptUrl;
-              } else {
-                window.location.reload();
-              }
-            }, 2000);
-
-            // 自動リダイレクト失敗時のためにボタンを表示
-            setTimeout(function() {
-              document.getElementById('toolButton').style.display = 'inline-block';
-            }, 3000);
-          </script>
-        </div>
-      </body>
-    </html>
-    `);
+function handleSlackCallback(code) {
+  try {
+    const callbackUrl = _getFrontendOAuthCallbackUrl();
+    const target = callbackUrl + '?code=' + encodeURIComponent(String(code || ''));
+    return _buildRedirectHtml(target);
   } catch (e) {
     return HtmlService.createHtmlOutput(`システムエラー: ${e.message}`);
   }

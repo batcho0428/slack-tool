@@ -1,50 +1,62 @@
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>{{APP_NAME}}</title>
+// @ts-nocheck
+'use client';
+/* eslint-disable */
 
-    <script>
-        window.onerror = function(message, source, lineno, colno, error) {
-            console.error(error);
-            var root = document.getElementById('root');
-            if(root) root.innerHTML = '<div style="color:red; padding:20px; text-align:center;"><h3>システムエラー</h3><p>' + message + '</p><p>Line: ' + lineno + '</p></div>';
-        };
-    </script>
+import { useEffect, useRef, useState } from 'react';
 
+declare global {
+    interface Window {
+        APP_NAME: string;
+        APP_HEADER_COLOR: string;
+    }
+}
 
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+const APP_NAME = process.env.NEXT_PUBLIC_APP_NAME || 'Slack送信ツール';
+const APP_HEADER_COLOR = process.env.NEXT_PUBLIC_APP_HEADER_COLOR || '#1a237e';
 
-    <style>
-        body { font-family: 'Helvetica Neue', Arial, 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', Meiryo, sans-serif; background-color: #f3f4f6; color: #1d1c1d; }
-        .modal-overlay { background-color: rgba(0, 0, 0, 0.5); backdrop-filter: blur(2px); }
-        ::-webkit-scrollbar { width: 6px; }
-        ::-webkit-scrollbar-track { background: #f1f1f1; }
-        ::-webkit-scrollbar-thumb { background: #ccc; border-radius: 4px; }
-        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        .animate-fade-in { animation: fadeIn 0.3s ease-in-out; }
-        button, input, select, textarea { touch-action: manipulation; }
-    </style>
-</head>
-<body>
-        <div id="root">
-        <div style="height: 100dvh; display: flex; justify-content: center; align-items: center; color: #666;">
-            <div><i class="fas fa-circle-notch fa-spin text-4xl mb-4"></i><p>システム読み込み中...</p></div>
-        </div>
-    <script>
-        window.APP_NAME = "{{APP_NAME}}";
-        window.APP_HEADER_COLOR = "{{APP_HEADER_COLOR}}";
-        if (window.APP_NAME.indexOf("{{") !== -1) window.APP_NAME = "Slack送信ツール";
-        if (window.APP_HEADER_COLOR.indexOf("{{") !== -1) window.APP_HEADER_COLOR = "#1a237e";
-    </script>
+if (typeof window !== 'undefined') {
+    window.APP_NAME = APP_NAME;
+    window.APP_HEADER_COLOR = APP_HEADER_COLOR;
+}
 
-    <script type="text/babel">
-        const { useState, useEffect, useRef } = React;
+const runGas = (funcName, ...args) => {
+  return fetch('/api/gas', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: funcName, payload: { __args: args } }),
+    cache: 'no-store'
+  })
+    .then(async (res) => {
+            const text = await res.text();
+            let json = null;
+            try {
+                json = JSON.parse(text);
+            } catch (e) {
+                const snippet = String(text || '').slice(0, 120);
+                throw new Error(`API応答がJSONではありません: ${snippet}`);
+            }
+      if (!json || !json.ok) {
+        throw new Error((json && json.error) || 'API request failed');
+      }
+      return json.result;
+    });
+};
+
+const extractAuthUrl = (value) => {
+    if (typeof value === 'string') return value.trim();
+    if (value && typeof value === 'object' && value.url) return String(value.url).trim();
+    return '';
+};
+
+const fetchAuthUrl = async () => {
+    const raw = await runGas('getAuthUrl');
+    const url = extractAuthUrl(raw);
+    if (!url) {
+        throw new Error('Slack連携URLを取得できませんでした。設定を確認してください。');
+    }
+    return url;
+};
+
 
         // CSV parser (handles quoted fields).
         const parseCsv = (text) => {
@@ -112,42 +124,6 @@
             return str;
         };
 
-        const runGas = (funcName, ...args) => {
-            const invoke = () => {
-                return new Promise((resolve, reject) => {
-                    try {
-                        google.script.run
-                            .withSuccessHandler(resolve)
-                            .withFailureHandler(reject)
-                            [funcName](...args);
-                    } catch (e) { reject(e); }
-                });
-            };
-
-            return new Promise((resolve, reject) => {
-                if (typeof google !== 'undefined' && google && google.script) {
-                    invoke().then(resolve).catch(reject);
-                    return;
-                }
-                // poll for google.script availability (up to 5s)
-                let waited = 0;
-                const interval = 100;
-                const maxWait = 5000;
-                const id = setInterval(() => {
-                    if (typeof google !== 'undefined' && google && google.script) {
-                        clearInterval(id);
-                        invoke().then(resolve).catch(reject);
-                        return;
-                    }
-                    waited += interval;
-                    if (waited >= maxWait) {
-                        clearInterval(id);
-                        reject(new Error('Google Apps Script環境が利用できません (timeout)'));
-                    }
-                }, interval);
-            });
-        };
-
         const processInBatches = async (items, batchSize, processFunction, onProgress) => {
             let successTotal = 0;
             let failedListTotal = [];
@@ -203,11 +179,27 @@
             const [user, setUser] = useState(null);
             const [authUrl, setAuthUrl] = useState('');
             const [errorMsg, setErrorMsg] = useState('');
-            const [scriptUrl, setScriptUrl] = useState('');
             const [logoutDialog, setLogoutDialog] = useState(false);
 
             useEffect(() => {
-                runGas('getScriptUrl').then(setScriptUrl);
+                const readTokenFromUrl = () => {
+                    const hash = window.location.hash || '';
+                    const hashText = hash.startsWith('#') ? hash.slice(1) : hash;
+                    const hashParams = new URLSearchParams(hashText);
+                    const fromHash = hashParams.get('sessionToken') || hashParams.get('session_token') || '';
+                    if (fromHash) return fromHash;
+
+                    const qs = new URLSearchParams(window.location.search || '');
+                    return qs.get('sessionToken') || qs.get('session_token') || '';
+                };
+
+                const tokenFromUrl = readTokenFromUrl();
+                if (tokenFromUrl) {
+                    localStorage.setItem('slack_app_session', tokenFromUrl);
+                    if (window.location.hash || window.location.search) {
+                        window.history.replaceState({}, document.title, window.location.pathname);
+                    }
+                }
                 const token = localStorage.getItem('slack_app_session');
                 checkLogin(token);
             }, []);
@@ -218,11 +210,21 @@
                         setUser({ ...res.user, hasToken: !!res.hasToken });
                         setView('main');
                         if (!res.hasToken) {
-                            runGas('getAuthUrl').then(url => setAuthUrl(url)).catch(()=>{});
+                            fetchAuthUrl().then(setAuthUrl).catch((e) => setErrorMsg(e.message || String(e)));
                         }
                     }
 
-                    else if (res.status === 'guest') { runGas('getAuthUrl').then(url => { setAuthUrl(url); setView('guest'); }); }
+                    else if (res.status === 'guest') {
+                        fetchAuthUrl()
+                            .then((url) => {
+                                setAuthUrl(url);
+                                setView('guest');
+                            })
+                            .catch((e) => {
+                                setErrorMsg(e.message || String(e));
+                                setView('error');
+                            });
+                    }
                     else { throw new Error(res.message); }
                 }).catch(e => { setErrorMsg(e.message); setView('error'); });
             };
@@ -233,16 +235,18 @@
             const executeLogout = () => {
                 setLogoutDialog(false);
                 localStorage.removeItem('slack_app_session');
-                if (scriptUrl) window.top.location.href = scriptUrl;
-                else window.location.reload();
+                setUser(null);
+                setAuthUrl('');
+                fetchAuthUrl().then(setAuthUrl).catch(() => {});
+                setView('guest');
             };
 
             return (
                 <div className="min-h-screen flex flex-col items-center pt-2 px-2 pb-2 md:pt-6 md:px-4 md:pb-10 bg-[#f3f4f6]">
                     <div className="w-full max-w-4xl bg-white rounded-lg md:rounded-xl shadow-xl overflow-hidden flex flex-col h-[calc(100dvh-1rem)] md:h-auto md:min-h-[700px]">
-                        <div style={{ backgroundColor: window.APP_HEADER_COLOR }} className="p-3 md:p-4 text-white flex justify-between items-center shadow-md z-10 shrink-0">
+                        <div style={{ backgroundColor: APP_HEADER_COLOR }} className="p-3 md:p-4 text-white flex justify-between items-center shadow-md z-10 shrink-0">
                             <h1 className="font-bold text-base md:text-lg tracking-wide flex items-center">
-                                <i className="fab fa-slack mr-2 text-xl"></i> {window.APP_NAME}
+                                <i className="fab fa-slack mr-2 text-xl"></i> {APP_NAME}
                             </h1>
                             {user && (
                                 <div className="flex items-center text-sm bg-white/10 px-2 py-1 md:px-3 rounded-full">
@@ -281,6 +285,15 @@
             const [code, setCode] = useState('');
             const [loading, setLoading] = useState(false);
             const [error, setError] = useState('');
+
+            const openSlackLogin = async () => {
+                try {
+                    const url = authUrl || await fetchAuthUrl();
+                    window.location.href = url;
+                } catch (e) {
+                    setError(e instanceof Error ? e.message : String(e));
+                }
+            };
 
             const handleRequestOtp = async (e) => {
                 e.preventDefault();
@@ -351,7 +364,7 @@
 
                     <div className="w-full max-w-md text-center">
                         <p className="text-xs text-gray-500 mb-2">- または -</p>
-                        <button onClick={() => { if (typeof authUrl !== 'undefined' && authUrl) window.top.location.href = authUrl; }} className="w-full bg-[#4A154B] text-white font-bold py-3 rounded-lg shadow hover:bg-[#381039] transition flex items-center justify-center text-sm">
+                        <button onClick={openSlackLogin} className="w-full bg-[#4A154B] text-white font-bold py-3 rounded-lg shadow hover:bg-[#381039] transition flex items-center justify-center text-sm">
                             <i className="fab fa-slack text-lg mr-2"></i> Slackアカウントでログイン (PC推奨)
                         </button>
                     </div>
@@ -817,7 +830,7 @@
                         {formEditOpen && (
                             <div className="fixed inset-0 flex items-center justify-center modal-overlay p-4 z-[230]">
                                 <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl p-5 max-h-[85vh] overflow-auto relative">
-                                        {flowLoading && (
+                                        {formSaving && (
                                             <div className="absolute inset-0 flex items-center justify-center bg-white/60 z-50">
                                                 <div className="flex flex-col items-center">
                                                     <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-3"></div>
@@ -3359,7 +3372,7 @@
             const [loginUrl, setLoginUrl] = useState(authUrl || '');
 
             useEffect(() => {
-                if (!loginUrl) runGas('getAuthUrl').then(url => setLoginUrl(url)).catch(()=>{});
+                if (!loginUrl) fetchAuthUrl().then(setLoginUrl).catch(()=>{});
             }, []);
 
             if (user && !user.hasToken) {
@@ -3368,7 +3381,15 @@
                         <div className="max-w-md w-full bg-white rounded-lg shadow p-6">
                             <h3 className="text-lg font-bold mb-2">Slackアカウントが連携されていません</h3>
                             <p className="text-sm text-gray-600 mb-4">Slackアカウントが連携されていないため、この機能は使用できません。</p>
-                            <button onClick={() => { if (loginUrl) window.top.location.href = loginUrl; }} className="w-full bg-[#4A154B] text-white font-bold py-3 rounded-lg shadow hover:bg-[#381039] transition flex items-center justify-center text-sm">
+                            <button onClick={async () => {
+                                try {
+                                    const url = loginUrl || await fetchAuthUrl();
+                                    setLoginUrl(url);
+                                    window.location.href = url;
+                                } catch (e) {
+                                    setDialog({ isOpen: true, type: 'alert', message: e.message || String(e), onOk: closeDialog });
+                                }
+                            }} className="w-full bg-[#4A154B] text-white font-bold py-3 rounded-lg shadow hover:bg-[#381039] transition flex items-center justify-center text-sm">
                                 <i className="fab fa-slack text-lg mr-2"></i> Slackアカウントでログイン
                             </button>
                         </div>
@@ -3464,7 +3485,7 @@
             const [loginUrl, setLoginUrl] = useState(authUrl || '');
 
             useEffect(() => {
-                if (!loginUrl) runGas('getAuthUrl').then(url => setLoginUrl(url)).catch(()=>{});
+                if (!loginUrl) fetchAuthUrl().then(setLoginUrl).catch(()=>{});
             }, []);
 
             const closeDialog = () => setDialog(prev => ({ ...prev, isOpen: false }));
@@ -3533,7 +3554,15 @@
                         <div className="max-w-md w-full bg-white rounded-lg shadow p-6">
                             <h3 className="text-lg font-bold mb-2">Slackアカウントが連携されていません</h3>
                             <p className="text-sm text-gray-600 mb-4">Slackアカウントが連携されていないため、この機能は使用できません。</p>
-                            <button onClick={() => { if (loginUrl) window.top.location.href = loginUrl; }} className="w-full bg-[#4A154B] text-white font-bold py-3 rounded-lg shadow hover:bg-[#381039] transition flex items-center justify-center text-sm">
+                            <button onClick={async () => {
+                                try {
+                                    const url = loginUrl || await fetchAuthUrl();
+                                    setLoginUrl(url);
+                                    window.location.href = url;
+                                } catch (e) {
+                                    setDialog({ isOpen: true, type: 'alert', message: e.message || String(e), onOk: closeDialog });
+                                }
+                            }} className="w-full bg-[#4A154B] text-white font-bold py-3 rounded-lg shadow hover:bg-[#381039] transition flex items-center justify-center text-sm">
                                 <i className="fab fa-slack text-lg mr-2"></i> Slackアカウントでログイン
                             </button>
                         </div>
@@ -3729,18 +3758,21 @@
             );
         }
 
-        // Mount the React app into #root
-        try {
-            const rootEl = document.getElementById('root');
-            if (rootEl && ReactDOM && ReactDOM.createRoot) {
-                ReactDOM.createRoot(rootEl).render(<App />);
-            } else if (rootEl && ReactDOM) {
-                ReactDOM.render(<App />, rootEl);
-            }
-        } catch (e) {
-            console.error('Failed to mount React app', e);
-        }
 
-    </script>
-</body>
-</html>
+export function LegacyAppPage() {
+  return (
+    <>
+      <style jsx global>{`
+        body { font-family: 'Helvetica Neue', Arial, 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', Meiryo, sans-serif; background-color: #f3f4f6; color: #1d1c1d; }
+        .modal-overlay { background-color: rgba(0, 0, 0, 0.5); backdrop-filter: blur(2px); }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar-thumb { background: #ccc; border-radius: 4px; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .animate-fade-in { animation: fadeIn 0.3s ease-in-out; }
+        button, input, select, textarea { touch-action: manipulation; }
+      `}</style>
+      <App />
+    </>
+  );
+}
