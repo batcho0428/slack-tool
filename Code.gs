@@ -42,7 +42,7 @@ const COL_TOKENS = {
 const HEADER_USERS = [
   '氏名', 'Name', '学籍番号', '学年', '分野', 'メールアドレス', '電話番号', '生年月日', '出身校',
   '退局', '次年度継続', 'Admin', '車所有',
-  '所属局1', '所属部門1', '役職1', 'Admin (12)',
+  '所属局1', '所属部門1', '役職1',
   '所属局2', '所属部門2', '役職2',
   '所属局3', '所属部門3', '役職3',
   '所属局4', '所属部門4', '役職4',
@@ -234,6 +234,20 @@ function setupSpreadsheet() {
   // 2. Usersシート
   let sheetUsers = ss.getSheetByName(SHEET_USERS);
   if (!sheetUsers) sheetUsers = ss.insertSheet(SHEET_USERS);
+  // Remove legacy stray column if it exists.
+  try {
+    const lastCol = Math.max(1, sheetUsers.getLastColumn());
+    const headerRow = sheetUsers.getRange(1, 1, 1, lastCol).getValues()[0] || [];
+    let idx = headerRow.findIndex(h => String(h || '').trim() === 'Admin (12)');
+    while (idx >= 0) {
+      sheetUsers.deleteColumn(idx + 1);
+      const newLastCol = Math.max(1, sheetUsers.getLastColumn());
+      const newHeaderRow = sheetUsers.getRange(1, 1, 1, newLastCol).getValues()[0] || [];
+      idx = newHeaderRow.findIndex(h => String(h || '').trim() === 'Admin (12)');
+    }
+  } catch (e) {
+    // ignore cleanup errors
+  }
   sheetUsers.getRange(1, 1, 1, HEADER_USERS.length).setValues([HEADER_USERS]);
 
   // 3. Logsシート
@@ -986,19 +1000,11 @@ function sendDMs(sessionToken, message, recipients) {
       const uid = getSlackID(token, r.email);
       if (!uid) throw new Error("Slackアカウントなし");
       const text = message.replace(/{mention}/g, `<@${uid}>`);
-      // 共有可能な Slack へのリンクを添付
-      const shareUrl = `https://slack.com/app_redirect?channel=${uid}`;
-      const fullText = `${text}\n\nまたは、以下のリンクを開いてください。\n${shareUrl}`;
-      // blocks を使って確実にリンクが表示されるようにする
-      const blocks = [
-        { type: 'section', text: { type: 'mrkdwn', text: text } },
-        { type: 'section', text: { type: 'mrkdwn', text: `または、以下のリンクを開いてください。\n<${shareUrl}>` } }
-      ];
       const res = UrlFetchApp.fetch("https://slack.com/api/chat.postMessage", {
         method: "post",
         contentType: "application/json",
         headers: { "Authorization": "Bearer " + token },
-        payload: JSON.stringify({ channel: uid, text: fullText, blocks: blocks }),
+        payload: JSON.stringify({ channel: uid, text: text }),
         muteHttpExceptions: true
       });
       const json = JSON.parse(res.getContentText());
@@ -1115,15 +1121,17 @@ function searchRecipients(criteria) {
 
   for (let i = 1; i < data.length; i++) {
     const row = data[i];
-    const nameJp = row[COL.NAME_JP];
-    const nameEn = row[COL.NAME_EN];
+    const nameJp = String(row[COL.NAME_JP] || '').trim();
+    const nameEn = String(row[COL.NAME_EN] || '').trim();
     const studentId = row[COL.STUDENT_ID] || "";
     const grade = row[COL.GRADE];
     const field = row[COL.FIELD];
-    const email = row[COL.EMAIL];
+    const email = String(row[COL.EMAIL] || '').trim();
     const almaMater = row[COL.ALMA_MATER] || "";
     const retired = row[COL.RETIRED] === true || row[COL.RETIRED] === 'TRUE';
     const searchString = `${nameJp} ${nameEn} ${email} ${almaMater} ${studentId}`.toLowerCase();
+
+    if (!nameJp || !email) continue;
 
     if (q && !searchString.includes(q)) continue;
 
@@ -1161,7 +1169,7 @@ function searchRecipients(criteria) {
       name: nameJp, email: email, department: depts.join(", ") || "所属なし", grade: grade, field: field
     });
   }
-  return results.slice(0, 50);
+  return results;
 }
 
 function handleSpreadsheetEdit(e) {
