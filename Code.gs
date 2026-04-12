@@ -391,15 +391,25 @@ function _getFrontendOAuthCallbackUrl() {
   return base + '/auth/slack/callback';
 }
 
+function _escapeHtmlAttribute(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function _buildRedirectHtml(targetUrl) {
   const safeTarget = String(targetUrl || '').trim();
+  const metaRefreshTarget = _escapeHtmlAttribute(safeTarget);
+  const jsTargetLiteral = JSON.stringify(safeTarget);
   return HtmlService.createHtmlOutput(`
     <html>
       <head>
         <meta charset="UTF-8" />
-        <meta http-equiv="refresh" content="0; url=${safeTarget}" />
+        <meta http-equiv="refresh" content="0; url=${metaRefreshTarget}" />
         <script>
-          window.top.location.replace('${safeTarget}');
+          window.top.location.replace(${jsTargetLiteral});
         </script>
       </head>
       <body>Redirecting...</body>
@@ -1095,12 +1105,16 @@ function searchRecipients(criteria) {
   const sheet = ss.getSheetByName(SHEET_USERS);
   const data = sheet.getDataRange().getValues();
   const results = [];
-  const q = criteria.query ? criteria.query.toLowerCase() : "";
-  const filterGrade = criteria.grade || "";
-  const filterField = criteria.field || "";
-  const filterOrg = criteria.org || "";
-  const filterDept = criteria.dept || "";
-  const filterRole = criteria.role || "";
+  const normalize = function(value) {
+    return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  };
+
+  const q = normalize(criteria.query || '');
+  const filterGrade = normalize(criteria.grade || '');
+  const filterField = normalize(criteria.field || '');
+  const filterOrg = normalize(criteria.org || '');
+  const filterDept = normalize(criteria.dept || '');
+  const filterRole = normalize(criteria.role || '');
   const filterStatus = criteria.status || "active"; // 'active', 'retired', 'all'
 
   for (let i = 1; i < data.length; i++) {
@@ -1113,19 +1127,16 @@ function searchRecipients(criteria) {
     const email = String(row[COL.EMAIL] || '').trim();
     const almaMater = row[COL.ALMA_MATER] || "";
     const retired = row[COL.RETIRED] === true || row[COL.RETIRED] === 'TRUE';
-    const searchString = `${nameJp} ${nameEn} ${email} ${almaMater} ${studentId}`.toLowerCase();
 
     if (!nameJp || !email) continue;
-
-    if (q && !searchString.includes(q)) continue;
 
     // 在籍フィルタ処理
     if (filterStatus === 'active' && retired) continue;
     if (filterStatus === 'retired' && !retired) continue;
     // filterStatus === 'all' の場合は全て表示
 
-    if (filterGrade && grade !== filterGrade) continue;
-    if (filterField && field !== filterField) continue;
+    if (filterGrade && normalize(grade) !== filterGrade) continue;
+    if (filterField && normalize(field) !== filterField) continue;
 
     let isOrgMatch = !filterOrg;
     let isDeptMatch = !filterDept;
@@ -1133,17 +1144,32 @@ function searchRecipients(criteria) {
     if (filterOrg || filterDept || filterRole) { isOrgMatch = false; isDeptMatch = false; isRoleMatch = false; }
 
     const depts = [];
+    const affiliationTokens = [];
     for (let k = 0; k < 5; k++) {
       const start = COL.ORG_START + (k * 3);
       if (start + 2 >= row.length) break;
-      const org = row[start];
-      const dept = row[start + 1];
-      const role = row[start + 2];
-      if (org || dept || role) depts.push([org, dept, role].filter(Boolean).join(" "));
+      const org = normalize(row[start]);
+      const dept = normalize(row[start + 1]);
+      const role = normalize(row[start + 2]);
+      const rawOrg = String(row[start] || '').trim();
+      const rawDept = String(row[start + 1] || '').trim();
+      const rawRole = String(row[start + 2] || '').trim();
+
+      if (rawOrg || rawDept || rawRole) {
+        depts.push([rawOrg, rawDept, rawRole].filter(Boolean).join(" "));
+      }
+
+      if (org) affiliationTokens.push(org);
+      if (dept) affiliationTokens.push(dept);
+      if (role) affiliationTokens.push(role);
+
       if (filterOrg && org === filterOrg) isOrgMatch = true;
       if (filterDept && dept === filterDept) isDeptMatch = true;
       if (filterRole && role === filterRole) isRoleMatch = true;
     }
+
+    const searchString = normalize(`${nameJp} ${nameEn} ${email} ${almaMater} ${studentId} ${affiliationTokens.join(' ')}`);
+    if (q && !searchString.includes(q)) continue;
 
     if (filterOrg && !isOrgMatch) continue;
     if (filterDept && !isDeptMatch) continue;

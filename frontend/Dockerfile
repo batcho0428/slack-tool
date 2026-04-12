@@ -10,11 +10,17 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
 
+FROM base AS prod-deps
+COPY --from=deps /app/package.json ./package.json
+COPY --from=deps /app/package-lock.json* ./
+COPY --from=deps /app/node_modules ./node_modules
+RUN npm prune --omit=dev
+
 FROM base AS runner
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build /app/.next ./.next
 COPY --from=build /app/package.json ./package.json
-COPY --from=deps /app/node_modules ./node_modules
+COPY --from=prod-deps /app/node_modules ./node_modules
 EXPOSE 3333
 CMD ["npm", "run", "start"]

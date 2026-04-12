@@ -5,6 +5,14 @@ import { useRouter, useSearchParams } from 'next/navigation';
 
 type CallbackState = 'processing' | 'success' | 'error';
 
+function buildNetworkErrorMessage(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/fetch failed|failed to fetch|networkerror/i.test(msg)) {
+    return '通信に失敗しました。サーバーが起動しているか、ネットワーク設定と /api/gas の疎通を確認してください。';
+  }
+  return msg;
+}
+
 export function SlackCallbackClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -42,15 +50,28 @@ export function SlackCallbackClient() {
 
       try {
         const redirectUri = `${window.location.origin}/auth/slack/callback`;
-        const res = await fetch('/api/gas', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'handleSlackOAuthCode',
-            payload: { code, redirectUri }
-          })
-        });
-        const json = await res.json();
+        let res: Response;
+        try {
+          res = await fetch('/api/gas', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'handleSlackOAuthCode',
+              payload: { code, redirectUri }
+            })
+          });
+        } catch (e) {
+          throw new Error(buildNetworkErrorMessage(e));
+        }
+
+        const text = await res.text();
+        let json: any;
+        try {
+          json = JSON.parse(text);
+        } catch {
+          const snippet = String(text || '').slice(0, 120);
+          throw new Error(`API応答がJSONではありません: ${snippet}`);
+        }
         if (!json || !json.ok) {
           throw new Error((json && json.error) || 'OAuth交換に失敗しました');
         }
@@ -66,7 +87,7 @@ export function SlackCallbackClient() {
         router.replace('/');
       } catch (e) {
         setState('error');
-        setMessage(e instanceof Error ? e.message : String(e));
+        setMessage(buildNetworkErrorMessage(e));
       }
     };
 

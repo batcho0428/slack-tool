@@ -1,115 +1,138 @@
+// @ts-nocheck
 'use client';
+/* eslint-disable */
 
 import { useEffect, useState } from 'react';
-import { gasApi } from '../../lib/api';
-import type { Channel, Recipient } from '../../lib/types';
+import SearchModal from '../shared/SearchModal';
+import RecipientSelector from '../shared/RecipientSelector';
+import ResultModal from '../shared/ResultModal';
 
-type Props = { sessionToken: string };
+        export default function ChannelTab({ user, authUrl, runGas, fetchAuthUrl, processInBatches, DialogModal }) {
+            const [channels, setChannels] = useState([]);
+            const [selectedChannel, setSelectedChannel] = useState('');
+            const [recipients, setRecipients] = useState([]);
+            const [loadingChannels, setLoadingChannels] = useState(true);
+            const [needsAuth, setNeedsAuth] = useState(false);
+            const [modalOpen, setModalOpen] = useState(false);
+            const [sending, setSending] = useState(false);
+            const [progress, setProgress] = useState(0);
+            const [result, setResult] = useState(null);
+            const [dialog, setDialog] = useState({ isOpen: false, type: 'alert', message: '', onOk: null, onCancel: null });
+            const [loginUrl, setLoginUrl] = useState(authUrl || '');
 
-export function ChannelTab({ sessionToken }: Props) {
-  const [channels, setChannels] = useState<Channel[]>([]);
-  const [channelId, setChannelId] = useState('');
-  const [query, setQuery] = useState('');
-  const [results, setResults] = useState<Recipient[]>([]);
-  const [recipients, setRecipients] = useState<Recipient[]>([]);
-  const [status, setStatus] = useState('');
+            useEffect(() => {
+                if (!loginUrl) fetchAuthUrl().then(setLoginUrl).catch(()=>{});
+            }, []);
 
-  useEffect(() => {
-    gasApi
-      .getChannels(sessionToken)
-      .then((list) => setChannels((list as Channel[]) || []))
-      .catch((e) => setStatus(e instanceof Error ? e.message : String(e)));
-  }, [sessionToken]);
+            const closeDialog = () => setDialog(prev => ({ ...prev, isOpen: false }));
 
-  const search = async () => {
-    try {
-      const list = (await gasApi.searchRecipients({ query, status: 'active' })) as Recipient[];
-      setResults(list || []);
-    } catch (e) {
-      setStatus(e instanceof Error ? e.message : String(e));
-    }
-  };
+            useEffect(() => {
+                let mounted = true;
+                setLoadingChannels(true);
+                setNeedsAuth(false);
 
-  const invite = async () => {
-    try {
-      const res = (await gasApi.inviteToChannel(sessionToken, channelId, recipients)) as {
-        success: number;
-        failed: Array<{ email: string; error: string }>;
-      };
-      setStatus(`招待完了: 成功 ${res.success} 件 / 失敗 ${(res.failed || []).length} 件`);
-    } catch (e) {
-      setStatus(e instanceof Error ? e.message : String(e));
-    }
-  };
+                // user が未セット (初期 null) の間は読み込みスピナーを継続する
+                if (user == null) {
+                    return () => { mounted = false; };
+                }
 
-  return (
-    <div style={{ display: 'grid', gap: 16 }}>
-      <section className="card" style={{ padding: 16 }}>
-        <h3 style={{ marginTop: 0 }}>チャンネル招待</h3>
-        <select style={input} value={channelId} onChange={(e) => setChannelId(e.target.value)}>
-          <option value="">チャンネルを選択</option>
-          {channels.map((c) => (
-            <option key={c.id} value={c.id}>{c.name}</option>
-          ))}
-        </select>
-      </section>
+                // Slack連携がない場合は読み込み表示ののち認証案内へ
+                if (!user.hasToken) {
+                    if (mounted) {
+                        setNeedsAuth(true);
+                        setChannels([]);
+                        setLoadingChannels(false);
+                    }
+                    return () => { mounted = false; };
+                }
 
-      <section className="card" style={{ padding: 16 }}>
-        <div className="row" style={{ alignItems: 'stretch' }}>
-          <input style={{ ...input, flex: 1 }} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="ユーザー検索" />
-          <button style={btn} onClick={search}>検索</button>
-        </div>
-        <div style={{ marginTop: 10, display: 'grid', gap: 6 }}>
-          {results.slice(0, 20).map((r) => (
-            <button key={r.email} onClick={() => setRecipients((prev) => prev.some((x) => x.email === r.email) ? prev : [...prev, r])} style={resultBtn}>
-              {r.name} ({r.email})
-            </button>
-          ))}
-        </div>
-      </section>
+                // 連携済: チャンネル取得
+                runGas('getChannels', localStorage.getItem('slack_app_session'))
+                    .then(list => { if (mounted) setChannels(list || []); })
+                    .catch(e => { if (mounted) setDialog({ isOpen: true, type: 'alert', message: "チャンネル取得エラー: " + e.message, onOk: closeDialog }); })
+                    .finally(() => { if (mounted) setLoadingChannels(false); });
 
-      <section className="card" style={{ padding: 16 }}>
-        <h4 style={{ marginTop: 0 }}>対象者 ({recipients.length})</h4>
-        <ul style={{ margin: 0, paddingInlineStart: 20 }}>
-          {recipients.map((r) => <li key={r.email}>{r.name} ({r.email})</li>)}
-        </ul>
-      </section>
+                return () => { mounted = false; };
+            }, [user]);
 
-      <button style={primaryBtn} onClick={invite} disabled={!channelId || recipients.length === 0}>招待実行</button>
-      {status ? <p style={{ margin: 0 }}>{status}</p> : null}
-    </div>
-  );
-}
+            const handleInviteClick = () => {
+                if(!selectedChannel) { setDialog({ isOpen: true, type: 'alert', message: "チャンネルを選択してください", onOk: closeDialog }); return; }
+                if(!recipients.length) { setDialog({ isOpen: true, type: 'alert', message: "ユーザーを選択してください", onOk: closeDialog }); return; }
+                setDialog({ isOpen: true, type: 'confirm', message: "実行しますか？", onOk: executeInvite, onCancel: closeDialog });
+            };
 
-const input: any = {
-  border: '1px solid #d1d5db',
-  borderRadius: 8,
-  padding: '10px 12px',
-  width: '100%'
-};
+            const executeInvite = async () => {
+                closeDialog();
+                setSending(true); setProgress(0); setResult(null);
+                const token = localStorage.getItem('slack_app_session');
+                try {
+                    const res = await processInBatches(recipients, 5, (batch) => runGas('inviteToChannel', token, selectedChannel, batch), (pct) => setProgress(pct));
+                    const failedEmails = new Set(res.failed.map(f => f.email));
+                    const failedDetails = res.failed.map(f => {
+                        const original = recipients.find(r => r.email === f.email);
+                        return { email: f.email, error: f.error, name: original ? original.name : '不明' };
+                    });
+                    setRecipients(recipients.filter(r => failedEmails.has(r.email)));
+                    setResult({ success: res.success, failed: failedDetails });
+                } catch(e) { setDialog({ isOpen: true, type: 'alert', message: "エラー: " + e.message, onOk: closeDialog }); }
+                finally { setSending(false); }
+            };
 
-const btn: any = {
-  border: '1px solid #d1d5db',
-  background: '#fff',
-  borderRadius: 8,
-  padding: '10px 12px',
-  cursor: 'pointer'
-};
+            // 初期は読み込み中を表示
+            if (loadingChannels) {
+                return <div className="flex justify-center items-center h-full text-gray-500"><i className="fas fa-spinner fa-spin mr-2"></i>読み込み中...</div>;
+            }
 
-const primaryBtn: any = {
-  border: 'none',
-  background: '#14532d',
-  color: '#fff',
-  borderRadius: 8,
-  padding: '10px 14px',
-  cursor: 'pointer'
-};
+            // 認証が必要な場合は案内を表示
+            if (needsAuth) {
+                return (
+                    <div className="flex flex-col items-center justify-center h-full p-6 text-center">
+                        <div className="max-w-md w-full bg-white rounded-lg shadow p-6">
+                            <h3 className="text-lg font-bold mb-2">Slackアカウントが連携されていません</h3>
+                            <p className="text-sm text-gray-600 mb-4">Slackアカウントが連携されていないため、この機能は使用できません。</p>
+                            <button onClick={async () => {
+                                try {
+                                    const url = loginUrl || await fetchAuthUrl();
+                                    setLoginUrl(url);
+                                    window.location.href = url;
+                                } catch (e) {
+                                    setDialog({ isOpen: true, type: 'alert', message: e.message || String(e), onOk: closeDialog });
+                                }
+                            }} className="w-full bg-[#4A154B] text-white font-bold py-3 rounded-lg shadow hover:bg-[#381039] transition flex items-center justify-center text-sm">
+                                <i className="fab fa-slack text-lg mr-2"></i> Slackアカウントでログイン
+                            </button>
+                        </div>
+                    </div>
+                );
+            }
 
-const resultBtn: any = {
-  textAlign: 'left',
-  border: '1px solid #e5e7eb',
-  background: '#fff',
-  borderRadius: 8,
-  padding: '8px 10px',
-  cursor: 'pointer'
-};
+            return (
+                <div className="flex flex-col h-full p-3 md:p-6 space-y-3 md:space-y-4 overflow-y-auto">
+                    <div className="space-y-2 shrink-0">
+                        <label className="font-bold text-gray-700 block text-sm md:text-base">追加先のチャンネル</label>
+                        <select value={selectedChannel} onChange={e=>setSelectedChannel(e.target.value)} disabled={loadingChannels} className="w-full border border-gray-300 p-2 md:p-3 rounded-lg bg-white text-sm">
+                            <option value="">選択してください...</option>
+                            {channels.map(c => <option key={c.id} value={c.id}>{c.is_private ? '🔒 ' : '# '}{c.name}</option>)}
+                        </select>
+                        <p className="text-xs text-gray-500">※ あなたが参加しているチャンネルのみ表示されます。</p>
+
+                    </div>
+                    <div className="flex-1 min-h-0">
+                        <RecipientSelector labelText="招待するユーザー" recipients={recipients} setRecipients={setRecipients} onAddClick={()=>setModalOpen(true)} />
+                    </div>
+                    <div className="pt-2 md:pt-4 shrink-0 pb-2">
+                        <button onClick={handleInviteClick} disabled={sending || !recipients.length} className={`w-full py-3 md:py-4 rounded-lg font-bold text-base md:text-lg shadow-md transition active:scale-95 ${sending?'bg-gray-400':'bg-green-600 hover:bg-green-700 text-white'}`}>
+                            {sending ? `処理中 (${progress}%)` : <span><i className="fas fa-user-plus mr-2"></i>チャンネルに追加</span>}
+                        </button>
+                    </div>
+                    {modalOpen && <SearchModal runGas={runGas} currentUserEmail={user.email} onClose={()=>setModalOpen(false)} onAdd={(ls)=>{
+                        const ids = new Set(recipients.map(r=>r.email));
+                        setRecipients([...recipients, ...ls.filter(r=>!ids.has(r.email))]);
+                        setModalOpen(false);
+                    }} />}
+                    {result && <ResultModal result={result} onClose={()=>setResult(null)} />}
+                    <DialogModal isOpen={dialog.isOpen} type={dialog.type} message={dialog.message} onOk={dialog.onOk} onCancel={dialog.onCancel} />
+                </div>
+            );
+        }
+

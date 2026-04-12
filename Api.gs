@@ -50,13 +50,28 @@ function _apiErrorString(err) {
   }
 }
 
+function _dispatchLegacyApiAction(action, args) {
+  switch (action) {
+    case 'getLoginUser':
+      return getLoginUser(args[0]);
+    case 'requestLoginOtp':
+      return requestLoginOtp(args[0]);
+    case 'verifyLoginOtp':
+      return verifyLoginOtp(args[0], args[1]);
+    case 'handleSlackOAuthCode':
+      return handleSlackOAuthCode(args[0], args[1]);
+    case 'searchRecipients':
+      return searchRecipients(args[0] || {});
+    case 'sendDMs':
+      return sendDMs(args[0], args[1], args[2] || []);
+    default:
+      throw new Error('Unsupported action: ' + action);
+  }
+}
+
 function _dispatchApiAction(action, payload) {
   if (payload && Object.prototype.toString.call(payload.__args) === '[object Array]') {
-    var fn = this[action];
-    if (typeof fn !== 'function') {
-      throw new Error('Unsupported action: ' + action);
-    }
-    return fn.apply(null, payload.__args);
+    return _dispatchLegacyApiAction(action, payload.__args);
   }
 
   switch (action) {
