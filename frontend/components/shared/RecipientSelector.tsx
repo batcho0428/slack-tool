@@ -32,7 +32,7 @@ import { useState } from 'react';
                                                     {r.grade} {r.field}
                                                 </div>
                                             )}
-                                            <div className="text-xs text-gray-500 truncate mt-1" title={r.department}>{r.department}</div>
+                                            <div className="text-xs text-gray-500 mt-1 whitespace-normal break-words" title={r.department}>{r.department}</div>
                                         </div>
                                         <button onClick={()=>setRecipients(recipients.filter(x=>x.email!==r.email))} className="text-gray-400 hover:text-red-500 ml-2 p-2">
                                             <i className="fas fa-times text-lg"></i>
@@ -45,4 +45,3 @@ import { useState } from 'react';
                 </div>
             );
         }
-

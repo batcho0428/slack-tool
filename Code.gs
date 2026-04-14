@@ -546,19 +546,14 @@ function requestLoginOtp(email) {
     const otpPayload = JSON.stringify({ code: otp, created: new Date().getTime() });
     PropertiesService.getScriptProperties().setProperty(`OTP_${targetEmail}`, otpPayload);
 
-    // DM送信（plain text と blocks 両方でリンクを表示する）
+    // DM送信（認証コードのみ）
     const plainText = `【${APP_NAME}】認証コード: *${otp}*\nこのコードを画面に入力してください。(有効期限10分)`;
-    const shareUrl = _getFrontendRedirectBaseUrl();
-    const blocks = [
-      { type: 'section', text: { type: 'mrkdwn', text: plainText } },
-      { type: 'section', text: { type: 'mrkdwn', text: `または、以下のリンクを開いてください。\n<${shareUrl}>` } }
-    ];
 
     const msgRes = UrlFetchApp.fetch("https://slack.com/api/chat.postMessage", {
       method: "post",
       contentType: "application/json",
       headers: { "Authorization": "Bearer " + botToken },
-      payload: JSON.stringify({ channel: slackUserId, text: plainText, blocks: blocks }),
+      payload: JSON.stringify({ channel: slackUserId, text: plainText }),
       muteHttpExceptions: true
     });
     const msgJson = JSON.parse(msgRes.getContentText());
@@ -998,7 +993,7 @@ function sendDMs(sessionToken, message, recipients) {
         method: "post",
         contentType: "application/json",
         headers: { "Authorization": "Bearer " + token },
-        payload: JSON.stringify({ channel: uid, text: text }),
+        payload: JSON.stringify({ channel: uid, text: text, unfurl_links: false, unfurl_media: false }),
         muteHttpExceptions: true
       });
       const json = JSON.parse(res.getContentText());
@@ -1087,16 +1082,71 @@ function inviteToChannel(sessionToken, channelId, recipients) {
 function getSearchOptions() {
   const ss = SpreadsheetApp.openById(getSpreadsheetId());
   const optSheet = ss.getSheetByName(SHEET_OPTIONS);
-  if (!optSheet) return { grades: [], fields: [], roles: [], orgs: [], deptMaster: [] };
-  const data = optSheet.getDataRange().getValues();
   const options = { grades: [], fields: [], roles: [], orgs: [], deptMaster: [] };
-  for (let i = 1; i < data.length; i++) {
-    if (data[i][0]) options.grades.push(data[i][0]);
-    if (data[i][1]) options.fields.push(data[i][1]);
-    if (data[i][2]) options.roles.push(data[i][2]);
-    if (data[i][3]) options.orgs.push(data[i][3]);
-    if (data[i][4] && data[i][5]) options.deptMaster.push({ org: data[i][4], dept: data[i][5] });
+
+  // Primary source: Options sheet
+  if (optSheet) {
+    const data = optSheet.getDataRange().getValues();
+    for (let i = 1; i < data.length; i++) {
+      if (data[i][0]) options.grades.push(String(data[i][0]).trim());
+      if (data[i][1]) options.fields.push(String(data[i][1]).trim());
+      if (data[i][2]) options.roles.push(String(data[i][2]).trim());
+      if (data[i][3]) options.orgs.push(String(data[i][3]).trim());
+      if (data[i][4] && data[i][5]) {
+        options.deptMaster.push({ org: String(data[i][4]).trim(), dept: String(data[i][5]).trim() });
+      }
+    }
   }
+
+  // Fallback source: derive from Users sheet so dropdowns never become empty.
+  const usersSheet = ss.getSheetByName(SHEET_USERS);
+  if (usersSheet) {
+    const rows = usersSheet.getDataRange().getValues();
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const grade = String(row[COL.GRADE] || '').trim();
+      const field = String(row[COL.FIELD] || '').trim();
+      if (grade) options.grades.push(grade);
+      if (field) options.fields.push(field);
+
+      for (let k = 0; k < 5; k++) {
+        const base = COL.ORG_START + (k * 3);
+        const org = String(row[base] || '').trim();
+        const dept = String(row[base + 1] || '').trim();
+        const role = String(row[base + 2] || '').trim();
+        if (org) options.orgs.push(org);
+        if (role) options.roles.push(role);
+        if (org && dept) options.deptMaster.push({ org: org, dept: dept });
+      }
+    }
+  }
+
+  const uniqueSorted = function(arr) {
+    return Array.from(new Set(arr.map(v => String(v || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'ja'));
+  };
+  const seenDept = {};
+  const dedupDeptMaster = [];
+  for (let i = 0; i < options.deptMaster.length; i++) {
+    const org = String(options.deptMaster[i].org || '').trim();
+    const dept = String(options.deptMaster[i].dept || '').trim();
+    if (!org || !dept) continue;
+    const key = org + '||' + dept;
+    if (seenDept[key]) continue;
+    seenDept[key] = true;
+    dedupDeptMaster.push({ org: org, dept: dept });
+  }
+
+  options.grades = uniqueSorted(options.grades);
+  options.fields = uniqueSorted(options.fields);
+  options.roles = uniqueSorted(options.roles);
+  options.orgs = uniqueSorted(options.orgs);
+  options.deptMaster = dedupDeptMaster.sort((a, b) => {
+    const orgCmp = a.org.localeCompare(b.org, 'ja');
+    if (orgCmp !== 0) return orgCmp;
+    return a.dept.localeCompare(b.dept, 'ja');
+  });
+
+  Logger.log('getSearchOptions result: ' + JSON.stringify(options));
   return options;
 }
 

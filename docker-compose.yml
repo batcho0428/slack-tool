@@ -10,6 +10,9 @@ services:
     ports:
       - "3333:3333"
     restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
 
   ngrok:
     image: ngrok/ngrok:latest
@@ -33,3 +36,6 @@ services:
     ports:
       - "4040:4040"
     restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1

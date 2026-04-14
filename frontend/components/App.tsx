@@ -18,7 +18,7 @@ declare global {
 
 const APP_NAME = process.env.NEXT_PUBLIC_APP_NAME || 'Slack送信ツール';
 const APP_HEADER_COLOR = process.env.NEXT_PUBLIC_APP_HEADER_COLOR || '#1a237e';
-const API_TIMEOUT_MS = 15000;
+const API_TIMEOUT_MS = 60000;
 
 if (typeof window !== 'undefined') {
     window.APP_NAME = APP_NAME;
@@ -39,10 +39,96 @@ const runGas = (funcName, ...args) => {
         return msg;
     };
 
+    // APIごとにpayloadを組み立てる
+    let payload = {};
+    switch (funcName) {
+        case 'getLoginUser':
+        case 'getUserProfile':
+        case 'listSurveys':
+        case 'listCollections':
+        case 'getChannels':
+        case 'getSearchOptions':
+            payload.sessionToken = args[0];
+            if (funcName === 'getUserProfile' && args[1]) payload.targetEmail = args[1];
+            break;
+        case 'inviteToChannel':
+            payload.sessionToken = args[0];
+            payload.channelId = args[1];
+            payload.recipients = args[2] || [];
+            break;
+        case 'sendDMs':
+            payload.sessionToken = args[0];
+            payload.message = args[1];
+            payload.recipients = args[2] || [];
+            break;
+        case 'createUser':
+            payload.sessionToken = args[0];
+            payload.userObj = args[1] || {};
+            break;
+        case 'getSurveyDetails':
+            payload.sessionToken = args[0];
+            payload.spreadsheetRef = args[1];
+            payload.rowIndex = args[2];
+            break;
+        case 'createCollection':
+        case 'updateCollection':
+            payload.sessionToken = args[0];
+            if (funcName === 'updateCollection') payload.collectionId = args[1];
+            payload.payload = funcName === 'createCollection' ? (args[1] || {}) : (args[2] || {});
+            break;
+        case 'deleteCollection':
+            payload.sessionToken = args[0];
+            payload.collectionId = args[1];
+            break;
+        case 'fetchCollectionSummary':
+            payload.sessionToken = args[0];
+            payload.collectionId = args[1];
+            break;
+        case 'getCollectionRowDetails':
+            payload.sessionToken = args[0];
+            payload.collectionId = args[1];
+            payload.recipientEmail = args[2];
+            break;
+        case 'recordPayment':
+            payload.sessionToken = args[0];
+            payload.collectionId = args[1];
+            payload.recipientEmail = args[2];
+            payload.amount = args[3];
+            payload.type = args[4];
+            payload.handlerEmail = args[5];
+            break;
+        case 'recordPaymentWithChange':
+            payload.sessionToken = args[0];
+            payload.collectionId = args[1];
+            payload.recipientEmail = args[2];
+            payload.receivedAmount = args[3];
+            payload.expectedAmount = args[4];
+            payload.handlerEmail = args[5];
+            break;
+        case 'createRosterCsv':
+            payload.sessionToken = args[0];
+            payload.params = args[1] || {};
+            break;
+        case 'requestLoginOtp':
+            payload.email = args[0];
+            break;
+        case 'verifyLoginOtp':
+            payload.email = args[0];
+            payload.code = args[1];
+            break;
+        case 'handleSlackOAuthCode':
+            payload.code = args[0];
+            payload.redirectUri = args[1];
+            break;
+        default:
+            // fallback: legacy互換
+            payload.__args = args;
+    }
+
     return fetch('/api/gas', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: funcName, payload: { __args: args } }),
+        body: JSON.stringify({ action: funcName, payload }),
         cache: 'no-store',
         signal: controller.signal
     })
@@ -358,7 +444,7 @@ const fetchAuthUrl = async () => {
                         {step === 1 ? (
                             <form onSubmit={handleRequestOtp} className="space-y-4">
                                 <p className="text-sm text-gray-600">
-                                    登録済みのメールアドレスを入力してください。<br/>Slack Botから認証コードとログインURLが送信されます。
+                                    登録済みのメールアドレスを入力してください。<br/>Slack Botから認証コードが送信されます。
                                 </p>
                                 <div>
                                     <label className="block text-xs font-bold text-gray-500 mb-1">メールアドレス</label>
@@ -371,8 +457,7 @@ const fetchAuthUrl = async () => {
                         ) : (
                             <form onSubmit={handleVerifyOtp} className="space-y-4">
                                 <p className="text-sm text-gray-600">
-                                    Slack Botから送信された6桁のコードを入力してください。<br/>
-                                    コードの下のURLからもログインできます。
+                                    Slack Botから送信された6桁のコードを入力してください。
                                 </p>
                                 <div>
                                     <label className="block text-xs font-bold text-gray-500 mb-1">認証コード</label>
@@ -610,12 +695,18 @@ const fetchAuthUrl = async () => {
 
             const formIsValid = (formDraft && typeof formDraft === 'object') ? ((formDraft.title || '').toString().trim().length > 0 && (((formDraft.spreadsheetRef||'').toString().trim().length > 0) || ((formDraft.formUrl||'').toString().trim().length > 0))) : false;
 
+
             useEffect(() => {
                 setLoading(true); setErr('');
                 const token = localStorage.getItem('slack_app_session');
-                runGas('listSurveys', token).then(res => {
-                    setSurveys(res || []);
-                }).catch(e => setErr(e.message || e)).finally(()=>setLoading(false));
+                // 並列でアンケートと集金を取得
+                Promise.all([
+                    runGas('listSurveys', token).catch(e => { setErr(e.message || e); return []; }),
+                    runGas('listCollections', token).catch(() => [])
+                ]).then(([surveys, collections]) => {
+                    setSurveys(surveys || []);
+                    setCollections(collections || []);
+                }).finally(()=>setLoading(false));
 
                 runGas('getUserProfile', token)
                     .then(p => { setIsAdmin(!!p.isAdmin); })

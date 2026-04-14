@@ -49,7 +49,17 @@ import ResultModal from '../shared/ResultModal';
                 // 連携済: チャンネル取得
                 runGas('getChannels', localStorage.getItem('slack_app_session'))
                     .then(list => { if (mounted) setChannels(list || []); })
-                    .catch(e => { if (mounted) setDialog({ isOpen: true, type: 'alert', message: "チャンネル取得エラー: " + e.message, onOk: closeDialog }); })
+                    .catch(e => {
+                        if (mounted) {
+                            // エラー詳細を表示
+                            setDialog({
+                                isOpen: true,
+                                type: 'alert',
+                                message: `チャンネル取得エラー: ${e.message}\n(デバッグ用: ${JSON.stringify(e, Object.getOwnPropertyNames(e))})`,
+                                onOk: closeDialog
+                            });
+                        }
+                    })
                     .finally(() => { if (mounted) setLoadingChannels(false); });
 
                 return () => { mounted = false; };
@@ -135,4 +145,3 @@ import ResultModal from '../shared/ResultModal';
                 </div>
             );
         }
-

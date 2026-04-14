@@ -64,6 +64,12 @@ function _dispatchLegacyApiAction(action, args) {
       return searchRecipients(args[0] || {});
     case 'sendDMs':
       return sendDMs(args[0], args[1], args[2] || []);
+    case 'getChannels':
+      return getChannels(args[0]);
+    case 'inviteToChannel':
+      return inviteToChannel(args[0], args[1], args[2] || []);
+    case 'createRosterCsv':
+      return createRosterCsv(args[0], args[1] || {});
     default:
       throw new Error('Unsupported action: ' + action);
   }
@@ -111,6 +117,12 @@ function _dispatchApiAction(action, payload) {
       return getSurveyDetails(payload.sessionToken, payload.spreadsheetRef, payload.rowIndex);
     case 'listCollections':
       return listCollections(payload.sessionToken);
+  // ダミー: listSurveys
+  function listSurveys(sessionToken) {
+    // 必要ならセッションチェックも可能
+    // ここでは空配列を返すだけ
+    return [];
+  }
     case 'createCollection':
       return createCollection(payload.sessionToken, payload.payload || {});
     case 'updateCollection':

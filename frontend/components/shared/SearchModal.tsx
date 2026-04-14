@@ -2,21 +2,32 @@
 'use client';
 /* eslint-disable */
 
-import { useEffect, useState } from 'react';
+
+import { useEffect, useState, useMemo } from 'react';
 
         export default function SearchModal({ onClose, onAdd, currentUserEmail, singleSelect = false, confirmLabel = '追加', runGas }) {
+
+            // 初期値はstatus: 'active'（在籍者のみ表示）
             const [criteria, setCriteria] = useState({ query: '', grade: '', field: '', org: '', dept: '', role: '', status: 'active' });
             const [options, setOptions] = useState({ grades:[], fields:[], orgs:[], roles:[], deptMaster:[] });
             const [availableDepts, setAvailableDepts] = useState([]);
-            const [res, setRes] = useState([]);
+            const [users, setUsers] = useState([]); // サーバーでフィルタ済み
             const [sel, setSel] = useState(new Set());
             const [loading, setLoading] = useState(true);
             const [showFilters, setShowFilters] = useState(false);
 
+
             useEffect(() => {
                 runGas('getSearchOptions').then(setOptions);
-                search(criteria);
             }, []);
+
+            // criteriaが変わるたびにサーバー検索
+            useEffect(() => {
+                setLoading(true);
+                runGas('searchRecipients', { ...criteria }).then(data => {
+                    setUsers((data || []).filter(r => r.email !== currentUserEmail));
+                }).finally(() => setLoading(false));
+            }, [criteria, currentUserEmail]);
 
             useEffect(() => {
                 if (criteria.org) {
@@ -28,20 +39,16 @@ import { useEffect, useState } from 'react';
                 }
             }, [criteria.org, options.deptMaster]);
 
+
             const handleFilterChange = (key, value) => {
                 let newCriteria = { ...criteria, [key]: value };
                 if (key === 'org') newCriteria.dept = '';
                 setCriteria(newCriteria);
-                search(newCriteria);
             };
 
-            const search = (currentCriteria) => {
-                setLoading(true);
-                runGas('searchRecipients', currentCriteria).then(data => {
-                    const filtered = data.filter(r => r.email !== currentUserEmail);
-                    setRes(filtered);
-                }).finally(() => setLoading(false));
-            };
+
+            // サーバーでフィルタ済み
+            const filteredUsers = users;
 
             const toggle = (m) => {
                 if (singleSelect) {
@@ -96,13 +103,13 @@ import { useEffect, useState } from 'react';
                             <input className="w-full border p-2 md:p-2.5 rounded text-sm md:text-base focus:ring-2 focus:ring-blue-400 outline-none bg-gray-50" value={criteria.query} onChange={e=>handleFilterChange('query', e.target.value)} placeholder="名前やメールで検索..." />
                         </div>
                         <div className="px-3 py-2 bg-blue-600 flex justify-between text-xs font-bold text-white uppercase tracking-wider shrink-0 items-center">
-                            <span>検索結果: {res.length}</span>
+                            <span>検索結果: {filteredUsers.length}</span>
                             <button onClick={toggleAll} className="bg-white/20 px-3 py-1 rounded hover:bg-white/30 transition active:bg-white/40">全選択 / 解除</button>
                         </div>
                         <div className="flex-1 overflow-y-auto p-2 space-y-1 bg-gray-100">
                             {loading ? (
                                 <div className="text-center py-10 text-gray-500"><i className="fas fa-spinner fa-spin mr-2"></i></div>
-                            ) : res.map(r => (
+                            ) : filteredUsers.map(r => (
                                 <div key={r.email} onClick={()=>toggle(r.email)} className={`p-2 rounded-lg border transition-all flex items-center bg-white ${sel.has(r.email)?'border-blue-500 bg-blue-50 shadow-sm':'border-gray-200'} active:bg-gray-50`}>
                                     <div className={`w-5 h-5 min-w-[20px] rounded-full border mr-3 flex items-center justify-center ${sel.has(r.email)?'bg-blue-500 border-blue-500':'border-gray-300'}`}>
                                         {sel.has(r.email) && <i className="fas fa-check text-white text-[10px]"></i>}
@@ -114,20 +121,23 @@ import { useEffect, useState } from 'react';
                                                 <i className="fas fa-school mr-1"></i>{r.grade} {r.field}
                                             </div>
                                         </div>
-                                        <div className="text-xs text-gray-500 truncate mt-0.5">{r.department}</div>
+                                        <div className="text-xs text-gray-500 mt-0.5 whitespace-normal break-words">
+                                            {[
+                                                Array.isArray(r.org) ? r.org.join(', ') : r.org,
+                                                Array.isArray(r.department) ? r.department.join(', ') : r.department,
+                                                Array.isArray(r.role) ? r.role.join(', ') : r.role
+                                            ].filter(Boolean).join(' / ')}
+                                        </div>
                                     </div>
                                 </div>
                             ))}
-                            {!loading && res.length === 0 && <div className="text-center py-10 text-gray-400 text-xs">該当なし</div>}
+                            {!loading && filteredUsers.length === 0 && <div className="text-center py-10 text-gray-400 text-xs">該当なし</div>}
                         </div>
                         <div className="p-3 md:p-4 border-t flex space-x-2 bg-white shadow-[0_-2px_10px_rgba(0,0,0,0.05)] shrink-0 pb-safe">
                             <button onClick={onClose} className="flex-1 py-3 rounded-lg text-sm font-medium text-gray-600 transition-colors bg-gray-100 active:bg-gray-200">キャンセル</button>
-                            <button onClick={()=>onAdd(res.filter(r=>sel.has(r.email)))} className="flex-[2] bg-blue-600 text-white py-3 rounded-lg font-bold shadow-lg hover:bg-blue-700 text-sm transition-all active:scale-95 active:bg-blue-800">{confirmLabel} ({sel.size})</button>
+                            <button onClick={()=>onAdd(filteredUsers.filter(r=>sel.has(r.email)))} className="flex-[2] bg-blue-600 text-white py-3 rounded-lg font-bold shadow-lg hover:bg-blue-700 text-sm transition-all active:scale-95 active:bg-blue-800">{confirmLabel} ({sel.size})</button>
                         </div>
                     </div>
                 </div>
             );
         }
-
-
-
