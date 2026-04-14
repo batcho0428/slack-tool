@@ -1,0 +1,41 @@
+services:
+  next:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: slack-tool-next
+    environment:
+      - GAS_WEB_APP_URL=${GAS_WEB_APP_URL:-}
+      - FRONTEND_API_SHARED_SECRET=${FRONTEND_API_SHARED_SECRET:-}
+    ports:
+      - "3333:3333"
+    restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: slack-tool-ngrok
+    depends_on:
+      - next
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    volumes:
+      - ./ngrok.yml:/etc/ngrok.yml:ro
+    entrypoint: /bin/sh
+    command:
+      - -ec
+      - |
+        if [ -n "$NGROK_AUTHTOKEN" ]; then
+          ngrok http --config=/etc/ngrok.yml --authtoken="$NGROK_AUTHTOKEN" --log=stdout --log-level=info next:3333
+        else
+          echo "NGROK_AUTHTOKEN is not set. ngrok tunnel is disabled."
+          tail -f /dev/null
+        fi
+    ports:
+      - "4040:4040"
+    restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1

@@ -58,6 +58,15 @@ function getScriptProperty(key) {
   return PropertiesService.getScriptProperties().getProperty(key);
 }
 
+function _normalizeSlackCredential(value) {
+  const s = String(value || '').trim();
+  if (!s) return '';
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    return s.slice(1, -1).trim();
+  }
+  return s;
+}
+
 /**
  * Debug helper: probe Forms sheet rows and report whether target spreadsheet and form can be opened.
  * Returns array of { rowIndex, rawA, rawB, spreadsheetId, ssOpen:bool, ssError, formOpen:bool, formError }
@@ -368,18 +377,71 @@ function installTriggers() {
   if (!exists) ScriptApp.newTrigger(triggerFuncName).forSpreadsheet(ss).onEdit().create();
 }
 
+function _getFrontendRedirectBaseUrl() {
+  const raw = String(getScriptProperty('FRONTEND_REDIRECT_URL') || '').trim();
+  if (!raw) throw new Error('FRONTEND_REDIRECT_URL を Script Properties に設定してください');
+  if (/script\.google\.com\/macros\//i.test(raw)) {
+    throw new Error('FRONTEND_REDIRECT_URL には ngrok フロントのURLを設定してください');
+  }
+  return raw;
+}
+
+function _getFrontendOAuthCallbackUrl() {
+  const base = _getFrontendRedirectBaseUrl().replace(/\/+$/, '');
+  return base + '/auth/slack/callback';
+}
+
+function _escapeHtmlAttribute(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function _buildRedirectHtml(targetUrl) {
+  const safeTarget = String(targetUrl || '').trim();
+  const metaRefreshTarget = _escapeHtmlAttribute(safeTarget);
+  const jsTargetLiteral = JSON.stringify(safeTarget);
+  return HtmlService.createHtmlOutput(`
+    <html>
+      <head>
+        <meta charset="UTF-8" />
+        <meta http-equiv="refresh" content="0; url=${metaRefreshTarget}" />
+        <script>
+          window.top.location.replace(${jsTargetLiteral});
+        </script>
+      </head>
+      <body>Redirecting...</body>
+    </html>
+  `).setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
 /* --------------------------------------------------------------------------
  * Webアプリ & OAuthエンドポイント
  * -------------------------------------------------------------------------- */
 function doGet(e) {
-  if (e.parameter.code) return handleSlackCallback(e.parameter.code);
-  let html = HtmlService.createHtmlOutputFromFile('index').getContent();
-  html = html.replace(/{{APP_NAME}}/g, APP_NAME);
-  html = html.replace(/{{APP_HEADER_COLOR}}/g, APP_HEADER_COLOR);
-  return HtmlService.createHtmlOutput(html)
-    .setTitle(APP_NAME)
-    .addMetaTag('viewport', 'width=device-width, initial-scale=1')
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  try {
+    const baseUrl = _getFrontendRedirectBaseUrl();
+    const p = (e && e.parameter) ? e.parameter : {};
+    if (p.code || p.error) {
+      const callbackUrl = _getFrontendOAuthCallbackUrl();
+      const query = [];
+      if (p.code) query.push('code=' + encodeURIComponent(String(p.code)));
+      if (p.state) query.push('state=' + encodeURIComponent(String(p.state)));
+      if (p.error) query.push('error=' + encodeURIComponent(String(p.error)));
+      if (p.error_description) query.push('error_description=' + encodeURIComponent(String(p.error_description)));
+      const target = callbackUrl + (query.length ? ('?' + query.join('&')) : '');
+      return _buildRedirectHtml(target);
+    }
+
+    return _buildRedirectHtml(baseUrl);
+  } catch (err) {
+    return HtmlService
+      .createHtmlOutput('FRONTEND_REDIRECT_URL を ngrok フロントURLで設定してください。')
+      .setTitle(APP_NAME)
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  }
 }
 
 /* --------------------------------------------------------------------------
@@ -484,19 +546,14 @@ function requestLoginOtp(email) {
     const otpPayload = JSON.stringify({ code: otp, created: new Date().getTime() });
     PropertiesService.getScriptProperties().setProperty(`OTP_${targetEmail}`, otpPayload);
 
-    // DM送信（plain text と blocks 両方でリンクを表示する）
+    // DM送信（認証コードのみ）
     const plainText = `【${APP_NAME}】認証コード: *${otp}*\nこのコードを画面に入力してください。(有効期限10分)`;
-    const shareUrl = getScriptProperty('SHAREABLE_URL');;
-    const blocks = [
-      { type: 'section', text: { type: 'mrkdwn', text: plainText } },
-      { type: 'section', text: { type: 'mrkdwn', text: `または、以下のリンクを開いてください。\n<${shareUrl}>` } }
-    ];
 
     const msgRes = UrlFetchApp.fetch("https://slack.com/api/chat.postMessage", {
       method: "post",
       contentType: "application/json",
       headers: { "Authorization": "Bearer " + botToken },
-      payload: JSON.stringify({ channel: slackUserId, text: plainText, blocks: blocks }),
+      payload: JSON.stringify({ channel: slackUserId, text: plainText }),
       muteHttpExceptions: true
     });
     const msgJson = JSON.parse(msgRes.getContentText());
@@ -548,30 +605,36 @@ function verifyLoginOtp(email, code) {
  * 2. OAuth関連 (PCからのログイン用 - Tokensシートに対応)
  * -------------------------------------------------------------------------- */
 function getAuthUrl() {
-  const clientId = getScriptProperty('SLACK_CLIENT_ID');
-  const scriptUrl = ScriptApp.getService().getUrl();
+  const clientId = _normalizeSlackCredential(getScriptProperty('SLACK_CLIENT_ID'));
+  const redirectUri = _getFrontendOAuthCallbackUrl();
   const userScopes = ["chat:write", "users:read", "users:read.email", "channels:read", "groups:read", "channels:write", "groups:write"].join(",");
-  return `https://slack.com/oauth/v2/authorize?client_id=${clientId}&user_scope=${userScopes}&redirect_uri=${encodeURIComponent(scriptUrl)}`;
+  return `https://slack.com/oauth/v2/authorize?client_id=${clientId}&user_scope=${userScopes}&redirect_uri=${encodeURIComponent(redirectUri)}`;
 }
 
 function getScriptUrl() { return ScriptApp.getService().getUrl(); }
 
-function handleSlackCallback(code) {
-  const clientId = getScriptProperty('SLACK_CLIENT_ID');
-  const clientSecret = getScriptProperty('SLACK_CLIENT_SECRET');
-  const scriptUrl = ScriptApp.getService().getUrl();
+function handleSlackOAuthCode(code, redirectUri) {
+  const clientId = _normalizeSlackCredential(getScriptProperty('SLACK_CLIENT_ID'));
+  const clientSecret = _normalizeSlackCredential(getScriptProperty('SLACK_CLIENT_SECRET'));
+  const expectedRedirectUri = _getFrontendOAuthCallbackUrl();
+  const actualRedirectUri = String(redirectUri || expectedRedirectUri).trim() || expectedRedirectUri;
 
-  if (!clientId || !clientSecret) return HtmlService.createHtmlOutput("システムエラー: Slack API設定不足");
+  if (!clientId || !clientSecret) {
+    return { success: false, message: 'システムエラー: Slack API設定不足' };
+  }
+  if (actualRedirectUri !== expectedRedirectUri) {
+    return { success: false, message: '不正なredirect_uriです' };
+  }
 
   const options = {
     method: "post",
-    payload: { client_id: clientId, client_secret: clientSecret, code: code, redirect_uri: scriptUrl }
+    payload: { client_id: clientId, client_secret: clientSecret, code: code, redirect_uri: expectedRedirectUri }
   };
 
   try {
     const res = UrlFetchApp.fetch("https://slack.com/api/oauth.v2.access", options);
     const json = JSON.parse(res.getContentText());
-    if (!json.ok) return HtmlService.createHtmlOutput(`Slack認証エラー: ${json.error}`);
+    if (!json.ok) return { success: false, message: `Slack認証エラー: ${json.error}` };
 
     const userSlackToken = json.authed_user.access_token;
     const slackUserId = json.authed_user.id;
@@ -580,7 +643,7 @@ function handleSlackCallback(code) {
       headers: { "Authorization": "Bearer " + userSlackToken }
     });
     const infoJson = JSON.parse(infoRes.getContentText());
-    if (!infoJson.ok) return HtmlService.createHtmlOutput(`ユーザー情報取得エラー: ${infoJson.error}`);
+    if (!infoJson.ok) return { success: false, message: `ユーザー情報取得エラー: ${infoJson.error}` };
 
     const userEmailRaw = infoJson.user.profile.email;
     const userEmail = String(userEmailRaw || '').trim().toLowerCase();
@@ -591,7 +654,9 @@ function handleSlackCallback(code) {
     const userData = usersSheet.getDataRange().getValues();
     const userExists = userData.some((r, i) => i > 0 && String(r[COL.EMAIL] || '').trim().toLowerCase() === userEmail);
 
-    if (!userExists) return HtmlService.createHtmlOutput(`<h2 style="color:red; text-align:center;">未登録ユーザー (${userEmail})</h2>`);
+    if (!userExists) {
+      return { success: false, message: `未登録ユーザー (${userEmail})` };
+    }
 
     // セッションとトークンを別々に保存
     const newSessionToken = Utilities.getUuid();
@@ -604,93 +669,17 @@ function handleSlackCallback(code) {
     tokensByEmail[userEmail] = { slackToken: userSlackToken, created: now };
     _saveStore(TOKENS_BY_EMAIL_PROP_KEY, tokensByEmail);
 
-    return HtmlService.createHtmlOutput(`
-    <html>
-      <head>
-        <meta charset="UTF-8">
-        <style>
-          body {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            background: #f3f4f6;
-            margin: 0;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', Meiryo, sans-serif;
-          }
-          .container {
-            background: white;
-            padding: 40px;
-            border-radius: 10px;
-            text-align: center;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            max-width: 400px;
-            width: 90%;
-          }
-          h2 {
-            color: #059669;
-            margin: 0 0 30px 0;
-          }
-          p {
-            color: #6b7280;
-            margin-bottom: 20px;
-            font-size: 14px;
-          }
-          button {
-            background-color: #2563eb;
-            color: white;
-            padding: 12px 32px;
-            border: none;
-            border-radius: 8px;
-            font-weight: bold;
-            font-size: 14px;
-            cursor: pointer;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            transition: background-color 0.3s;
-            display: none;
-          }
-          button:hover {
-            background-color: #1d4ed8;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <h2>連携完了</h2>
-          <p>認証が完了しました。ツールへ戻るをクリックしてください。</p>
-          <button id="toolButton" onclick="redirectToTool()">ツールへ戻る</button>
-          <script>
-            const sessionToken = '${newSessionToken}';
-            const scriptUrl = '${scriptUrl}';
+    return { success: true, sessionToken: newSessionToken, email: userEmail };
+  } catch (e) {
+    return { success: false, message: `システムエラー: ${e.message}` };
+  }
+}
 
-            function redirectToTool() {
-              localStorage.setItem('slack_app_session', sessionToken);
-              if (scriptUrl) {
-                window.top.location.href = scriptUrl;
-              } else {
-                window.location.reload();
-              }
-            }
-
-            // 2秒後に自動リダイレクト
-            setTimeout(function() {
-              localStorage.setItem('slack_app_session', sessionToken);
-              if (scriptUrl) {
-                window.top.location.href = scriptUrl;
-              } else {
-                window.location.reload();
-              }
-            }, 2000);
-
-            // 自動リダイレクト失敗時のためにボタンを表示
-            setTimeout(function() {
-              document.getElementById('toolButton').style.display = 'inline-block';
-            }, 3000);
-          </script>
-        </div>
-      </body>
-    </html>
-    `);
+function handleSlackCallback(code) {
+  try {
+    const callbackUrl = _getFrontendOAuthCallbackUrl();
+    const target = callbackUrl + '?code=' + encodeURIComponent(String(code || ''));
+    return _buildRedirectHtml(target);
   } catch (e) {
     return HtmlService.createHtmlOutput(`システムエラー: ${e.message}`);
   }
@@ -1004,7 +993,7 @@ function sendDMs(sessionToken, message, recipients) {
         method: "post",
         contentType: "application/json",
         headers: { "Authorization": "Bearer " + token },
-        payload: JSON.stringify({ channel: uid, text: text }),
+        payload: JSON.stringify({ channel: uid, text: text, unfurl_links: false, unfurl_media: false }),
         muteHttpExceptions: true
       });
       const json = JSON.parse(res.getContentText());
@@ -1093,16 +1082,71 @@ function inviteToChannel(sessionToken, channelId, recipients) {
 function getSearchOptions() {
   const ss = SpreadsheetApp.openById(getSpreadsheetId());
   const optSheet = ss.getSheetByName(SHEET_OPTIONS);
-  if (!optSheet) return { grades: [], fields: [], roles: [], orgs: [], deptMaster: [] };
-  const data = optSheet.getDataRange().getValues();
   const options = { grades: [], fields: [], roles: [], orgs: [], deptMaster: [] };
-  for (let i = 1; i < data.length; i++) {
-    if (data[i][0]) options.grades.push(data[i][0]);
-    if (data[i][1]) options.fields.push(data[i][1]);
-    if (data[i][2]) options.roles.push(data[i][2]);
-    if (data[i][3]) options.orgs.push(data[i][3]);
-    if (data[i][4] && data[i][5]) options.deptMaster.push({ org: data[i][4], dept: data[i][5] });
+
+  // Primary source: Options sheet
+  if (optSheet) {
+    const data = optSheet.getDataRange().getValues();
+    for (let i = 1; i < data.length; i++) {
+      if (data[i][0]) options.grades.push(String(data[i][0]).trim());
+      if (data[i][1]) options.fields.push(String(data[i][1]).trim());
+      if (data[i][2]) options.roles.push(String(data[i][2]).trim());
+      if (data[i][3]) options.orgs.push(String(data[i][3]).trim());
+      if (data[i][4] && data[i][5]) {
+        options.deptMaster.push({ org: String(data[i][4]).trim(), dept: String(data[i][5]).trim() });
+      }
+    }
   }
+
+  // Fallback source: derive from Users sheet so dropdowns never become empty.
+  const usersSheet = ss.getSheetByName(SHEET_USERS);
+  if (usersSheet) {
+    const rows = usersSheet.getDataRange().getValues();
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const grade = String(row[COL.GRADE] || '').trim();
+      const field = String(row[COL.FIELD] || '').trim();
+      if (grade) options.grades.push(grade);
+      if (field) options.fields.push(field);
+
+      for (let k = 0; k < 5; k++) {
+        const base = COL.ORG_START + (k * 3);
+        const org = String(row[base] || '').trim();
+        const dept = String(row[base + 1] || '').trim();
+        const role = String(row[base + 2] || '').trim();
+        if (org) options.orgs.push(org);
+        if (role) options.roles.push(role);
+        if (org && dept) options.deptMaster.push({ org: org, dept: dept });
+      }
+    }
+  }
+
+  const uniqueSorted = function(arr) {
+    return Array.from(new Set(arr.map(v => String(v || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'ja'));
+  };
+  const seenDept = {};
+  const dedupDeptMaster = [];
+  for (let i = 0; i < options.deptMaster.length; i++) {
+    const org = String(options.deptMaster[i].org || '').trim();
+    const dept = String(options.deptMaster[i].dept || '').trim();
+    if (!org || !dept) continue;
+    const key = org + '||' + dept;
+    if (seenDept[key]) continue;
+    seenDept[key] = true;
+    dedupDeptMaster.push({ org: org, dept: dept });
+  }
+
+  options.grades = uniqueSorted(options.grades);
+  options.fields = uniqueSorted(options.fields);
+  options.roles = uniqueSorted(options.roles);
+  options.orgs = uniqueSorted(options.orgs);
+  options.deptMaster = dedupDeptMaster.sort((a, b) => {
+    const orgCmp = a.org.localeCompare(b.org, 'ja');
+    if (orgCmp !== 0) return orgCmp;
+    return a.dept.localeCompare(b.dept, 'ja');
+  });
+
+  Logger.log('getSearchOptions result: ' + JSON.stringify(options));
   return options;
 }
 
@@ -1111,12 +1155,16 @@ function searchRecipients(criteria) {
   const sheet = ss.getSheetByName(SHEET_USERS);
   const data = sheet.getDataRange().getValues();
   const results = [];
-  const q = criteria.query ? criteria.query.toLowerCase() : "";
-  const filterGrade = criteria.grade || "";
-  const filterField = criteria.field || "";
-  const filterOrg = criteria.org || "";
-  const filterDept = criteria.dept || "";
-  const filterRole = criteria.role || "";
+  const normalize = function(value) {
+    return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  };
+
+  const q = normalize(criteria.query || '');
+  const filterGrade = normalize(criteria.grade || '');
+  const filterField = normalize(criteria.field || '');
+  const filterOrg = normalize(criteria.org || '');
+  const filterDept = normalize(criteria.dept || '');
+  const filterRole = normalize(criteria.role || '');
   const filterStatus = criteria.status || "active"; // 'active', 'retired', 'all'
 
   for (let i = 1; i < data.length; i++) {
@@ -1129,19 +1177,16 @@ function searchRecipients(criteria) {
     const email = String(row[COL.EMAIL] || '').trim();
     const almaMater = row[COL.ALMA_MATER] || "";
     const retired = row[COL.RETIRED] === true || row[COL.RETIRED] === 'TRUE';
-    const searchString = `${nameJp} ${nameEn} ${email} ${almaMater} ${studentId}`.toLowerCase();
 
     if (!nameJp || !email) continue;
-
-    if (q && !searchString.includes(q)) continue;
 
     // 在籍フィルタ処理
     if (filterStatus === 'active' && retired) continue;
     if (filterStatus === 'retired' && !retired) continue;
     // filterStatus === 'all' の場合は全て表示
 
-    if (filterGrade && grade !== filterGrade) continue;
-    if (filterField && field !== filterField) continue;
+    if (filterGrade && normalize(grade) !== filterGrade) continue;
+    if (filterField && normalize(field) !== filterField) continue;
 
     let isOrgMatch = !filterOrg;
     let isDeptMatch = !filterDept;
@@ -1149,17 +1194,32 @@ function searchRecipients(criteria) {
     if (filterOrg || filterDept || filterRole) { isOrgMatch = false; isDeptMatch = false; isRoleMatch = false; }
 
     const depts = [];
+    const affiliationTokens = [];
     for (let k = 0; k < 5; k++) {
       const start = COL.ORG_START + (k * 3);
       if (start + 2 >= row.length) break;
-      const org = row[start];
-      const dept = row[start + 1];
-      const role = row[start + 2];
-      if (org || dept || role) depts.push([org, dept, role].filter(Boolean).join(" "));
+      const org = normalize(row[start]);
+      const dept = normalize(row[start + 1]);
+      const role = normalize(row[start + 2]);
+      const rawOrg = String(row[start] || '').trim();
+      const rawDept = String(row[start + 1] || '').trim();
+      const rawRole = String(row[start + 2] || '').trim();
+
+      if (rawOrg || rawDept || rawRole) {
+        depts.push([rawOrg, rawDept, rawRole].filter(Boolean).join(" "));
+      }
+
+      if (org) affiliationTokens.push(org);
+      if (dept) affiliationTokens.push(dept);
+      if (role) affiliationTokens.push(role);
+
       if (filterOrg && org === filterOrg) isOrgMatch = true;
       if (filterDept && dept === filterDept) isDeptMatch = true;
       if (filterRole && role === filterRole) isRoleMatch = true;
     }
+
+    const searchString = normalize(`${nameJp} ${nameEn} ${email} ${almaMater} ${studentId} ${affiliationTokens.join(' ')}`);
+    if (q && !searchString.includes(q)) continue;
 
     if (filterOrg && !isOrgMatch) continue;
     if (filterDept && !isDeptMatch) continue;
