@@ -122,7 +122,7 @@ import { useEffect, useState, useMemo } from 'react';
                                             </div>
                                         </div>
                                         <div className="text-xs text-gray-500 mt-0.5 whitespace-normal break-words">
-                                            {[
+                                            {r.departmentText || [
                                                 Array.isArray(r.org) ? r.org.join(', ') : r.org,
                                                 Array.isArray(r.department) ? r.department.join(', ') : r.department,
                                                 Array.isArray(r.role) ? r.role.join(', ') : r.role

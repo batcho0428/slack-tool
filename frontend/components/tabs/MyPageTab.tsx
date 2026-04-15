@@ -22,13 +22,20 @@ import SearchModal from '../shared/SearchModal';
             const nameRef = useRef(null);
             const saveBtnRef = useRef(null);
 
+            const normalizeOrgs = (arr) => {
+                const src = Array.isArray(arr) ? arr.slice() : [];
+                while (src.length < 10) src.push({ org: '', dept: '', role: '' });
+                return src.slice(0, 10);
+            };
+
             useEffect(() => {
                 Promise.all([
                     runGas('getUserProfile', localStorage.getItem('slack_app_session')),
                     runGas('getSearchOptions')
                 ]).then(([p, o]) => {
-                    setProfile(p);
-                    setSavedProfile(p);
+                    const normalized = { ...p, orgs: normalizeOrgs(p && p.orgs) };
+                    setProfile(normalized);
+                    setSavedProfile(normalized);
                     setOptions(o);
                     runGas('isContinueSwitchEnabled').then(r=>setContinueSwitchEnabled(!!r)).catch(()=>{});
                 }).catch(e => setMsg({ type: 'error', text: e.message }))
@@ -118,9 +125,19 @@ import SearchModal from '../shared/SearchModal';
                 setProfile(prev => ({ ...prev, orgs: newOrgs }));
             };
 
+            const orgMaster = (options && Array.isArray(options.orgMaster) && options.orgMaster.length > 0)
+                ? options.orgMaster
+                : ((options && Array.isArray(options.orgs)) ? options.orgs.map(o => ({ org: o, notMain: false })) : []);
+            const roleMaster = (options && Array.isArray(options.roleMaster) && options.roleMaster.length > 0)
+                ? options.roleMaster
+                : ((options && Array.isArray(options.roles)) ? options.roles.map(r => ({ role: r, notMain: false })) : []);
+
             const EMPTY_NEW_PROFILE = () => ({
                 name: '', nameEn: '', email: '', studentId: '', grade: '', field: '', phone: '', birthday: '', almaMater: '', carOwner: false, isAdmin: false,
-                orgs: [{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''}],
+                orgs: [
+                    {org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},
+                    {org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''}
+                ],
                 canEditNameEmail: true
             });
 
@@ -189,8 +206,9 @@ import SearchModal from '../shared/SearchModal';
                     setLoading(true);
                     const token = localStorage.getItem('slack_app_session');
                     const p = await runGas('getUserProfile', token, selectedEmail);
-                    setProfile(p);
-                    setSavedProfile(p);
+                    const normalized = { ...p, orgs: normalizeOrgs(p && p.orgs) };
+                    setProfile(normalized);
+                    setSavedProfile(normalized);
                     setEditingTarget(selectedEmail);
                     setCreating(false);
                 } catch(e) { setMsg({ type: 'error', text: '読み込み失敗: ' + e.message }); }
@@ -202,8 +220,9 @@ import SearchModal from '../shared/SearchModal';
                     setLoading(true);
                     const token = localStorage.getItem('slack_app_session');
                     const p = await runGas('getUserProfile', token);
-                    setProfile(p);
-                    setSavedProfile(p);
+                    const normalized = { ...p, orgs: normalizeOrgs(p && p.orgs) };
+                    setProfile(normalized);
+                    setSavedProfile(normalized);
                     setEditingTarget(null);
                     setCreating(false);
                 } catch(e) { setMsg({ type: 'error', text: '読み込み失敗: ' + e.message }); }
@@ -384,7 +403,7 @@ import SearchModal from '../shared/SearchModal';
                             </div>
                         )}
                         <br/><br/>
-                        <h3 className="text-sm font-bold text-gray-700 mb-3 border-b pb-1">所属情報 (最大5つ)</h3>
+                        <h3 className="text-sm font-bold text-gray-700 mb-3 border-b pb-1">所属情報 (最大10つ)</h3>
                         <div className="text-xs text-gray-500 mt-1">(1つ目の所属先は主となる所属先です。主所属局は管理者以外変更できません。<br/>兼局先も登録してください。<br/>執行部は兼局先として登録してください。)</div>
                         <div className="space-y-3 mb-6">
                             {profile.orgs.map((orgData, idx) => (
@@ -393,21 +412,21 @@ import SearchModal from '../shared/SearchModal';
                                         <label className="text-[10px] text-gray-500">{idx === 0 ? (profile && profile.canEditNameEmail ? '所属局' : '所属局 (変更不可)') : '所属局'}</label>
                                         <select value={orgData.org} onChange={e=>handleOrgChange(idx, 'org', e.target.value)} disabled={idx === 0 && !(profile && profile.canEditNameEmail)} className={`w-full border p-1 rounded text-sm ${(idx === 0 && !(profile && profile.canEditNameEmail)) ? 'bg-gray-100 text-gray-500' : 'bg-white'}`}>
                                             <option value="">なし</option>
-                                            {options.orgs.map(o=><option key={o} value={o}>{o}</option>)}
+                                            {orgMaster.filter(o => idx !== 0 || !o.notMain || o.org === orgData.org).map(o=><option key={o.org} value={o.org}>{o.org}</option>)}
                                         </select>
                                     </div>
                                     <div className="flex-1">
                                         <label className="text-[10px] text-gray-500">所属部門</label>
                                         <select value={orgData.dept} onChange={e=>handleOrgChange(idx, 'dept', e.target.value)} className="w-full border p-1 rounded text-sm bg-white">
                                             <option value="">なし</option>
-                                            {options.deptMaster.filter(d=>!orgData.org || d.org===orgData.org).map(d=><option key={d.dept} value={d.dept}>{d.dept}</option>)}
+                                            {options.deptMaster.filter(d=>(!orgData.org || d.org===orgData.org) && (idx !== 0 || !d.notMain || d.dept === orgData.dept)).map(d=><option key={d.dept + ':' + (d.pid || '')} value={d.dept}>{d.dept}</option>)}
                                         </select>
                                     </div>
                                     <div className="flex-1">
                                         <label className="text-[10px] text-gray-500">役職</label>
                                         <select value={orgData.role} onChange={e=>handleOrgChange(idx, 'role', e.target.value)} className="w-full border p-1 rounded text-sm bg-white">
                                             <option value="">なし</option>
-                                            {options.roles.map(o=><option key={o} value={o}>{o}</option>)}
+                                            {roleMaster.filter(r => idx !== 0 || !r.notMain || r.role === orgData.role).map(r=><option key={r.role} value={r.role}>{r.role}</option>)}
                                         </select>
                                     </div>
                                 </div>
@@ -431,4 +450,3 @@ import SearchModal from '../shared/SearchModal';
                 </div>
             );
         }
-

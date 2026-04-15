@@ -61,6 +61,30 @@ import { useEffect, useRef, useState } from 'react';
                     const [myCollectionsModalLoading, setMyCollectionsModalLoading] = useState(false);
                     const [myCollectionsModalDetails, setMyCollectionsModalDetails] = useState(null);
 
+            const orgMasterList = Array.isArray(orgOptions && orgOptions.orgMaster) ? orgOptions.orgMaster : [];
+            const deptMasterList = Array.isArray(orgOptions && orgOptions.deptMaster) ? orgOptions.deptMaster : [];
+
+            const resolveOrgLabel = (orgCode) => {
+                const code = String(orgCode || '').trim();
+                if (!code) return '';
+                const found = orgMasterList.find(item => String(item.pid || '').trim() === code);
+                return (found && found.org) ? found.org : code;
+            };
+
+            const resolveDeptLabel = (deptCode) => {
+                const code = String(deptCode || '').trim();
+                if (!code) return '';
+                const found = deptMasterList.find(item => String(item.pid || '').trim() === code);
+                return (found && found.dept) ? found.dept : code;
+            };
+
+            const formatAffiliationLabel = (orgCode, deptCode) => {
+                const orgLabel = resolveOrgLabel(orgCode);
+                const deptLabel = resolveDeptLabel(deptCode);
+                if (deptLabel && deptLabel !== orgLabel) return (orgLabel || '-') + ' / ' + deptLabel;
+                return orgLabel || deptLabel || '-';
+            };
+
             useEffect(()=>{
                 setLoading(true);
                 const token = localStorage.getItem('slack_app_session');
@@ -94,8 +118,8 @@ import { useEffect, useRef, useState } from 'react';
                             out.push({
                                 id: c.id,
                                 title: c.title || c.spreadsheetUrl || '無題',
-                                org: c.inChargeOrg || '',
-                                dept: c.inChargeDept || '',
+                                org: c.inChargeOrgLabel || c.inChargeOrg || '',
+                                dept: c.inChargeDeptLabel || c.inChargeDept || '',
                                 expected,
                                 diff: expected - collected
                             });
@@ -153,7 +177,7 @@ import { useEffect, useRef, useState } from 'react';
                         return { ...h, handlerName: handlerMap[em] || '' };
                     });
                     const answers = {
-                        '担当局/担当部門': (item.org || '-') + (item.dept ? (' / ' + item.dept) : ''),
+                        '担当局/担当部門': formatAffiliationLabel(item.org, item.dept),
                         '集金額': fmtYen(expected),
                         '受領済み': fmtYen(collected),
                         '過不足': label + ' ' + fmtYen(Math.abs(diff))
@@ -201,9 +225,9 @@ import { useEffect, useRef, useState } from 'react';
                 try {
                     const token = localStorage.getItem('slack_app_session');
                     const formsRes = await runGas('listFormDefinitions', token).catch(()=>({ success: true, items: [] }));
-                    const opts = await runGas('getSearchOptions').catch(()=>({ orgs: [], deptMaster: [] }));
+                    const opts = await runGas('getSearchOptions').catch(()=>({ orgMaster: [], deptMaster: [] }));
                     if (formsRes && formsRes.success) setFormsList(formsRes.items || []); else setFormsList([]);
-                    if (opts) setOrgOptions({ orgs: opts.orgs || [], deptMaster: opts.deptMaster || [] });
+                    if (opts) setOrgOptions({ orgs: opts.orgs || [], orgMaster: opts.orgMaster || [], deptMaster: opts.deptMaster || [] });
                 } catch (e) {
                     setFormsList([]);
                 } finally {
@@ -467,7 +491,17 @@ import { useEffect, useRef, useState } from 'react';
                     const token = localStorage.getItem('slack_app_session');
                     const criteria = org ? { org: org, status: 'active' } : { status: 'active' };
                     const res = await runGas('searchRecipients', criteria);
-                    const mapped = (res || []).map(r => ({ name: r.name, email: r.email, grade: r.grade, field: r.field, department: r.department }));
+                    const mapped = (res || []).map(r => ({
+                        name: r.name,
+                        email: r.email,
+                        grade: r.grade,
+                        field: r.field,
+                        department: r.departmentText || [
+                            Array.isArray(r.org) ? r.org.join(', ') : r.org,
+                            Array.isArray(r.department) ? r.department.join(', ') : r.department,
+                            Array.isArray(r.role) ? r.role.join(', ') : r.role
+                        ].filter(Boolean).join(' / ')
+                    }));
                     setFlowPeople(mapped);
                     // derive grades
                     const grades = Array.from(new Set(mapped.map(m=>m.grade).filter(Boolean)));
@@ -821,8 +855,8 @@ import { useEffect, useRef, useState } from 'react';
                                                     if (sel) {
                                                         setSheetUrl(sel.spreadsheetRef || sel.formUrl || '');
                                                         if (!title) setTitle(sel.title || '');
-                                                        setSelectedOrg(sel.inChargeOrg || '');
-                                                        setSelectedDept(sel.inChargeDept || '');
+                                                        setSelectedOrg(sel.inChargeOrg || sel.inChargeOrgCode || '');
+                                                        setSelectedDept(sel.inChargeDept || sel.inChargeDeptCode || '');
                                                     } else {
                                                         setSheetUrl('');
                                                         setSelectedOrg(''); setSelectedDept('');
@@ -898,23 +932,23 @@ import { useEffect, useRef, useState } from 'react';
                                                 setEditingId(c.id || '');
                                                 setTitle(c.title || '');
                                                 setSheetUrl(c.spreadsheetUrl || '');
-                                                setSelectedOrg(c.inChargeOrg || '');
-                                                setSelectedDept(c.inChargeDept || '');
+                                                setSelectedOrg(c.inChargeOrg || c.inChargeOrgCode || '');
+                                                setSelectedDept(c.inChargeDept || c.inChargeDeptCode || '');
                                                 setEditSelectOpen(false);
                                                 setModalOpen(true);
                                                 setFormsLoading(true);
                                                 try {
                                                     const token = localStorage.getItem('slack_app_session');
                                                     const formsRes = await runGas('listFormDefinitions', token).catch(()=>({ success: true, items: [] }));
-                                                    const opts = await runGas('getSearchOptions').catch(()=>({ orgs: [], deptMaster: [] }));
+                                                    const opts = await runGas('getSearchOptions').catch(()=>({ orgMaster: [], deptMaster: [] }));
                                                     if (formsRes && formsRes.success) setFormsList(formsRes.items || []); else setFormsList([]);
-                                                    if (opts) setOrgOptions({ orgs: opts.orgs || [], deptMaster: opts.deptMaster || [] });
+                                                    if (opts) setOrgOptions({ orgs: opts.orgs || [], orgMaster: opts.orgMaster || [], deptMaster: opts.deptMaster || [] });
                                                 } catch(e) { setFormsList([]); }
                                                 finally { setFormsLoading(false); }
                                             }}>
                                                 <div className="min-w-0">
                                                     <div className="font-medium truncate">{c.title || c.spreadsheetUrl || '無題'}</div>
-                                                    <div className="text-xs text-gray-500 truncate">{(c.inChargeOrg || '-') + (c.inChargeDept ? (' / ' + c.inChargeDept) : '')}</div>
+                                                    <div className="text-xs text-gray-500 truncate">{formatAffiliationLabel(c.inChargeOrgLabel || c.inChargeOrg, c.inChargeDeptLabel || c.inChargeDept)}</div>
                                                 </div>
                                             </div>
                                         ))}
@@ -945,7 +979,7 @@ import { useEffect, useRef, useState } from 'react';
                                             }}>
                                                 <div className="min-w-0">
                                                     <div className="font-medium truncate">{c.title || c.spreadsheetUrl || '無題'}</div>
-                                                    <div className="text-xs text-gray-500 truncate">{(c.inChargeOrg || '-') + (c.inChargeDept ? (' / ' + c.inChargeDept) : '')}</div>
+                                                    <div className="text-xs text-gray-500 truncate">{formatAffiliationLabel(c.inChargeOrgLabel || c.inChargeOrg, c.inChargeDeptLabel || c.inChargeDept)}</div>
                                                 </div>
                                             </div>
                                         ))}
@@ -1369,22 +1403,27 @@ import { useEffect, useRef, useState } from 'react';
                 { key: 'メールアドレス', label: 'メールアドレス', adminOnly: false },
                 { key: '電話番号', label: '電話番号', adminOnly: true },
                 { key: '生年月日', label: '生年月日', adminOnly: true },
-                { key: '所属局1', label: '所属局1', adminOnly: false },
                 { key: '所属部門1', label: '所属部門1', adminOnly: false },
                 { key: '役職1', label: '役職1', adminOnly: false },
-                // atomic keys for 2-5 must exist so grouping logic can create the grouped checkbox
-                { key: '所属局2', label: '所属局2', adminOnly: false },
+                // atomic keys for 2-10 must exist so grouping logic can create the grouped checkbox
                 { key: '所属部門2', label: '所属部門2', adminOnly: false },
                 { key: '役職2', label: '役職2', adminOnly: false },
-                { key: '所属局3', label: '所属局3', adminOnly: false },
                 { key: '所属部門3', label: '所属部門3', adminOnly: false },
                 { key: '役職3', label: '役職3', adminOnly: false },
-                { key: '所属局4', label: '所属局4', adminOnly: false },
                 { key: '所属部門4', label: '所属部門4', adminOnly: false },
                 { key: '役職4', label: '役職4', adminOnly: false },
-                { key: '所属局5', label: '所属局5', adminOnly: false },
                 { key: '所属部門5', label: '所属部門5', adminOnly: false },
                 { key: '役職5', label: '役職5', adminOnly: false },
+                { key: '所属部門6', label: '所属部門6', adminOnly: false },
+                { key: '役職6', label: '役職6', adminOnly: false },
+                { key: '所属部門7', label: '所属部門7', adminOnly: false },
+                { key: '役職7', label: '役職7', adminOnly: false },
+                { key: '所属部門8', label: '所属部門8', adminOnly: false },
+                { key: '役職8', label: '役職8', adminOnly: false },
+                { key: '所属部門9', label: '所属部門9', adminOnly: false },
+                { key: '役職9', label: '役職9', adminOnly: false },
+                { key: '所属部門10', label: '所属部門10', adminOnly: false },
+                { key: '役職10', label: '役職10', adminOnly: false },
                 { key: '出身校', label: '出身校', adminOnly: true },
                 { key: '退局', label: '退局ステータス', adminOnly: true },
                 { key: '次年度継続', label: '次年度継続ステータス', adminOnly: true },
@@ -1393,20 +1432,20 @@ import { useEffect, useRef, useState } from 'react';
 
             const [selected, setSelected] = useState(new Set());
             const [selectAll, setSelectAll] = useState(false);
-            // atomic keys and display grouping for所属2-5
+            // atomic keys and display grouping for所属2-10
             const availableAtomicKeys = fields.map(f=>f.key);
             const displayFields = (()=>{
                 const out = [];
                 let skippingGroup = false;
                 for (const f of fields) {
-                    // 所属2-5グループの開始を検出
-                    if (f.key === '所属局2' && !skippingGroup) {
-                        out.push({ key: '所属2-5', label: '所属局・部門・役職（2～5）', isGroup: true, adminOnly: false });
+                    // 所属2-10グループの開始を検出
+                    if (f.key === '所属部門2' && !skippingGroup) {
+                        out.push({ key: '所属2-10', label: '所属部門・役職（2～10）', isGroup: true, adminOnly: false });
                         skippingGroup = true;
                         continue;
                     }
-                    // 所属2-5グループに属するアイテムをスキップ
-                    if (/^(所属局[2-5]|所属部門[2-5]|役職[2-5])$/.test(f.key)) {
+                    // 所属2-10グループに属するアイテムをスキップ
+                    if (/^(所属部門([2-9]|10)|役職([2-9]|10))$/.test(f.key)) {
                         continue;
                     }
                     // 他のアイテム（所属1を含む）は通常追加
@@ -1484,7 +1523,7 @@ import { useEffect, useRef, useState } from 'react';
                     try {
                         const list = await runGas('listSurveys', token);
                         if (Array.isArray(list)) {
-                                    const mapped = list.map(s => ({ title: s.title || s.spreadsheetId || s.formUrl || s.spreadsheetUrl, ref: s.spreadsheetId || s.spreadsheetUrl || s.formUrl || '', inChargeOrg: s.inChargeOrg || '', inChargeDept: s.inChargeDept || '' }));
+                                    const mapped = list.map(s => ({ title: s.title || s.spreadsheetId || s.formUrl || s.spreadsheetUrl, ref: s.spreadsheetId || s.spreadsheetUrl || s.formUrl || '', inChargeOrg: s.inChargeOrgLabel || s.inChargeOrg || '', inChargeDept: s.inChargeDeptLabel || s.inChargeDept || '' }));
                                     setSurveys(mapped.filter(s=>s.ref));
                         } else if (list && list.message) {
                             setSurveys([]);
@@ -1517,11 +1556,10 @@ import { useEffect, useRef, useState } from 'react';
             const toggleField = (k, adminOnly) => {
                 if (adminOnly && !isAdmin) return;
                 const s = new Set(Array.from(selected));
-                // handle grouped key for 所属2-5: toggle all atomic members
-                if (k === '所属2-5') {
+                // handle grouped key for 所属2-10: toggle all atomic members
+                if (k === '所属2-10') {
                     const atomic = [];
-                    for (let idx = 2; idx <= 5; idx++) {
-                        atomic.push(`所属局${idx}`);
+                    for (let idx = 2; idx <= 10; idx++) {
                         atomic.push(`所属部門${idx}`);
                         atomic.push(`役職${idx}`);
                     }
@@ -1610,9 +1648,8 @@ import { useEffect, useRef, useState } from 'react';
                 const arr = Array.from(selected);
                 const expanded = [];
                 for (const v of arr) {
-                    if (v === '所属2-5') {
-                        for (let idx = 2; idx <= 5; idx++) {
-                            expanded.push(`所属局${idx}`);
+                    if (v === '所属2-10') {
+                        for (let idx = 2; idx <= 10; idx++) {
                             expanded.push(`所属部門${idx}`);
                             expanded.push(`役職${idx}`);
                         }
@@ -1758,7 +1795,7 @@ import { useEffect, useRef, useState } from 'react';
                                             {/* group checked if all atomic members selected */}
                                             <input type="checkbox" checked={(() => {
                                                 const atomic = [];
-                                                for (let idx = 2; idx <= 5; idx++) { atomic.push(`所属局${idx}`); atomic.push(`所属部門${idx}`); atomic.push(`役職${idx}`); }
+                                                for (let idx = 2; idx <= 10; idx++) { atomic.push(`所属部門${idx}`); atomic.push(`役職${idx}`); }
                                                 return atomic.every(a => selected.has(a));
                                             })()} disabled={f.adminOnly && !isAdmin} readOnly className="mr-3 w-4 h-4" />
                                             <span className="text-sm">{f.label}</span>
@@ -1796,9 +1833,9 @@ import { useEffect, useRef, useState } from 'react';
                                         {surveys.length === 0 && !surveysLoading && (
                                             <div className="mt-2 text-xs text-gray-500">
                                                 {surveyFetchError ? (
-                                                    <div>アンケートの取得に失敗しました: <span className="text-red-600">{surveyFetchError}</span> <button className="ml-2 text-blue-600 underline" onClick={() => { const t = localStorage.getItem('slack_app_session'); runGas('listSurveys', t).then(list => { if (Array.isArray(list)) { const mapped = list.map(s => ({ title: s.title || s.spreadsheetId || s.formUrl || s.spreadsheetUrl, ref: s.spreadsheetId || s.spreadsheetUrl || s.formUrl || '' })); setSurveys(mapped.filter(s=>s.ref)); safeSetSurveyError(''); } else if (list && list.message) { safeSetSurveyError(String(list.message)); } }).catch(e=>safeSetSurveyError(e && e.message?e.message:String(e))); }}>再読み込み</button></div>
+                                                    <div>アンケートの取得に失敗しました: <span className="text-red-600">{surveyFetchError}</span> <button className="ml-2 text-blue-600 underline" onClick={() => { const t = localStorage.getItem('slack_app_session'); runGas('listSurveys', t).then(list => { if (Array.isArray(list)) { const mapped = list.map(s => ({ title: s.title || s.spreadsheetId || s.formUrl || s.spreadsheetUrl, ref: s.spreadsheetId || s.spreadsheetUrl || s.formUrl || '', inChargeOrg: s.inChargeOrgLabel || s.inChargeOrg || '', inChargeDept: s.inChargeDeptLabel || s.inChargeDept || '' })); setSurveys(mapped.filter(s=>s.ref)); safeSetSurveyError(''); } else if (list && list.message) { safeSetSurveyError(String(list.message)); } }).catch(e=>safeSetSurveyError(e && e.message?e.message:String(e))); }}>再読み込み</button></div>
                                                 ) : (
-                                                    <div>アンケートが見つかりません。<button className="ml-2 text-blue-600 underline" onClick={() => { const t = localStorage.getItem('slack_app_session'); runGas('listSurveys', t).then(list => { if (Array.isArray(list)) { const mapped = list.map(s => ({ title: s.title || s.spreadsheetId || s.formUrl || s.spreadsheetUrl, ref: s.spreadsheetId || s.spreadsheetUrl || s.formUrl || '' })); setSurveys(mapped.filter(s=>s.ref)); safeSetSurveyError(''); } else if (list && list.message) { safeSetSurveyError(String(list.message)); } }).catch(e=>safeSetSurveyError(e && e.message?e.message:String(e))); }}>再読み込み</button></div>
+                                                    <div>アンケートが見つかりません。<button className="ml-2 text-blue-600 underline" onClick={() => { const t = localStorage.getItem('slack_app_session'); runGas('listSurveys', t).then(list => { if (Array.isArray(list)) { const mapped = list.map(s => ({ title: s.title || s.spreadsheetId || s.formUrl || s.spreadsheetUrl, ref: s.spreadsheetId || s.spreadsheetUrl || s.formUrl || '', inChargeOrg: s.inChargeOrgLabel || s.inChargeOrg || '', inChargeDept: s.inChargeDeptLabel || s.inChargeDept || '' })); setSurveys(mapped.filter(s=>s.ref)); safeSetSurveyError(''); } else if (list && list.message) { safeSetSurveyError(String(list.message)); } }).catch(e=>safeSetSurveyError(e && e.message?e.message:String(e))); }}>再読み込み</button></div>
                                                 )}
                                             </div>
                                         )}
@@ -1989,4 +2026,3 @@ import { useEffect, useRef, useState } from 'react';
                 </div>
             );
         }
-
