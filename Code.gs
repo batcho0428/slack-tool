@@ -2551,6 +2551,243 @@ function listFormDefinitions(sessionToken) {
   }
 }
 
+function _buildReminderUsers(ss, masters) {
+  const usersSheet = ss.getSheetByName(SHEET_USERS);
+  if (!usersSheet) return [];
+  const rows = usersSheet.getDataRange().getValues();
+  const users = [];
+
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i] || [];
+    const email = String(row[COL.EMAIL] || '').trim().toLowerCase();
+    const name = String(row[COL.NAME_JP] || '').trim();
+    if (!email || !name) continue;
+
+    const affiliations = [];
+    const orgLabels = [];
+    const deptLabels = [];
+    const roleLabels = [];
+    const deptTexts = [];
+    for (let k = 0; k < AFFILIATION_SLOTS; k++) {
+      const affCode = String(row[_affiliationDeptCol(k)] || '').trim();
+      const aff = _parseAffiliationCode(affCode, masters);
+      const rolePid = String(row[_affiliationRoleCol(k)] || '').trim();
+      const roleLabel = _toLabelOrEmpty(rolePid, masters.role.byPid);
+      if (!aff.org && !aff.dept && !roleLabel) continue;
+      affiliations.push({ org: aff.org || '', dept: aff.dept || '', role: roleLabel || '' });
+      if (aff.org) orgLabels.push(aff.org);
+      if (aff.dept) deptLabels.push(aff.dept);
+      if (roleLabel) roleLabels.push(roleLabel);
+      const affLabel = aff.dept ? (aff.org ? (aff.org + '/' + aff.dept) : aff.dept) : (aff.org || '');
+      deptTexts.push([affLabel, roleLabel].filter(Boolean).join(' '));
+    }
+
+    const retired = row[COL.RETIRED] === true || row[COL.RETIRED] === 'TRUE';
+    users.push({
+      name: name,
+      email: email,
+      studentId: String(row[COL.STUDENT_ID] || '').trim(),
+      grade: _toLabelOrEmpty(row[COL.GRADE], masters.grade.byPid),
+      field: _toLabelOrEmpty(row[COL.FIELD], masters.field.byPid),
+      retired: retired,
+      affiliations: affiliations,
+      org: Array.from(new Set(orgLabels)),
+      department: Array.from(new Set(deptLabels)),
+      role: Array.from(new Set(roleLabels)),
+      departmentText: deptTexts.join(', ') || '所属なし',
+      mainOrg: affiliations.length > 0 ? String(affiliations[0].org || '') : '',
+      mainDept: affiliations.length > 0 ? String(affiliations[0].dept || '') : ''
+    });
+  }
+
+  return users;
+}
+
+function collectSurveyReminderStatus(sessionToken, surveyRowIndices) {
+  const login = getLoginUser(sessionToken);
+  if (!login || login.status !== 'authorized') {
+    return { success: false, message: '認証されていません' };
+  }
+
+  const ss = SpreadsheetApp.openById(getSpreadsheetId());
+  const masters = _loadMasterMaps(ss);
+  const formsSheet = ss.getSheetByName(SHEET_FORMS);
+  if (!formsSheet || formsSheet.getLastRow() < 2) {
+    return { success: true, surveys: [], users: _buildReminderUsers(ss, masters), unansweredByEmail: {} };
+  }
+
+  const selectedRows = {};
+  (surveyRowIndices || []).forEach(v => {
+    const n = Number(v);
+    if (!isNaN(n) && n >= 2) selectedRows[n] = true;
+  });
+
+  const cols = Math.max(HEADER_FORMS.length, formsSheet.getLastColumn());
+  const formRows = formsSheet.getRange(2, 1, formsSheet.getLastRow() - 1, cols).getValues();
+  const selectedSurveys = [];
+
+  for (let i = 0; i < formRows.length; i++) {
+    const rowIndex = i + 2;
+    if (Object.keys(selectedRows).length > 0 && !selectedRows[rowIndex]) continue;
+    const r = formRows[i] || [];
+    const spreadRef = String(r[0] || '').trim();
+    const formUrl = String(r[1] || '').trim();
+    const title = String(r[2] || '').trim() || spreadRef || formUrl || ('アンケート' + rowIndex);
+    const sid = _extractSpreadsheetId(spreadRef) || _extractSpreadsheetId(formUrl);
+    if (!sid) continue;
+
+    const collectingRaw = r[4];
+    const collecting = (collectingRaw === true) || (String(collectingRaw || '').toLowerCase() === 'true');
+    const surveyInfo = {
+      rowIndex: rowIndex,
+      spreadsheetId: sid,
+      title: title,
+      formUrl: formUrl,
+      collecting: collecting,
+      respondedEmails: {},
+      respondedStudentIds: {},
+      error: ''
+    };
+
+    try {
+      const targetSs = SpreadsheetApp.openById(sid);
+      const sh = targetSs.getSheets()[0];
+      const lastCol = Math.max(1, sh.getLastColumn());
+      const headerRow = _detectHeaderRow(sh, lastCol);
+      const headers = sh.getRange(headerRow, 1, 1, lastCol).getValues()[0] || [];
+      const emailIdx = _findHeaderIndex(headers, ['メール', 'メールアドレス', '^email$','^e-mail$']);
+      const sidIdx = _findHeaderIndex(headers, ['学籍番号', 'student id', 'studentid', '学籍']);
+      const dataCount = Math.max(0, sh.getLastRow() - headerRow);
+      if (dataCount > 0 && (emailIdx >= 0 || sidIdx >= 0)) {
+        const data = sh.getRange(headerRow + 1, 1, dataCount, lastCol).getValues();
+        for (let rIdx = 0; rIdx < data.length; rIdx++) {
+          const row = data[rIdx] || [];
+          if (emailIdx >= 0) {
+            const em = String(row[emailIdx] || '').trim().toLowerCase();
+            if (em) surveyInfo.respondedEmails[em] = true;
+          }
+          if (sidIdx >= 0) {
+            const st = String(row[sidIdx] || '').trim();
+            if (st) surveyInfo.respondedStudentIds[st] = true;
+          }
+        }
+      }
+    } catch (e) {
+      surveyInfo.error = String(e && e.message ? e.message : e);
+    }
+
+    selectedSurveys.push(surveyInfo);
+  }
+
+  const users = _buildReminderUsers(ss, masters);
+  const unansweredByEmail = {};
+
+  users.forEach(u => {
+    const email = String(u.email || '').trim().toLowerCase();
+    if (!email) return;
+    const pending = [];
+    selectedSurveys.forEach(s => {
+      if (s.error) return;
+      const byEmail = !!s.respondedEmails[email];
+      const byStudentId = !!(u.studentId && s.respondedStudentIds[u.studentId]);
+      if (!byEmail && !byStudentId) {
+        pending.push({
+          rowIndex: s.rowIndex,
+          title: s.title,
+          formUrl: s.formUrl || ''
+        });
+      }
+    });
+    unansweredByEmail[email] = pending;
+  });
+
+  return {
+    success: true,
+    surveys: selectedSurveys.map(s => ({
+      rowIndex: s.rowIndex,
+      spreadsheetId: s.spreadsheetId,
+      title: s.title,
+      formUrl: s.formUrl,
+      collecting: s.collecting,
+      error: s.error || ''
+    })),
+    users: users,
+    unansweredByEmail: unansweredByEmail
+  };
+}
+
+function _buildSurveyReminderText(mention, unansweredSurveys) {
+  const list = Array.isArray(unansweredSurveys) ? unansweredSurveys : [];
+  if (list.length === 0) {
+    return '回答が必要なアンケートはありません。\nアンケート回答へのご協力ありがとうございました。';
+  }
+
+  let text = mention + ' さん\nあなたの未回答のアンケートをお知らせします\n期限までに回答へのご協力お願いします\n\n';
+  list.forEach(item => {
+    const title = String(item && item.title ? item.title : 'アンケート').trim();
+    const line = '～期限未設定 ' + title;
+    text += line + '\n';
+    const url = String(item && item.formUrl ? item.formUrl : '').trim();
+    if (url) text += url + '\n';
+    text += '\n';
+  });
+  return text.trim();
+}
+
+function sendSurveyReminderDMs(sessionToken, payload) {
+  const login = getLoginUser(sessionToken);
+  if (!login || login.status !== 'authorized') {
+    return { success: 0, failed: [{ email: '', error: '認証されていません' }] };
+  }
+
+  const senderEmail = String(login.user && login.user.email ? login.user.email : '').trim().toLowerCase();
+  const recipients = (payload && Array.isArray(payload.recipients)) ? payload.recipients : [];
+  const botToken = _normalizeSlackCredential(getScriptProperty('SLACK_BOT_TOKEN'));
+  if (!botToken) {
+    return { success: 0, failed: recipients.map(r => ({ email: String(r && r.email ? r.email : ''), error: 'SLACK_BOT_TOKEN が設定されていません' })) };
+  }
+
+  const ss = SpreadsheetApp.openById(getSpreadsheetId());
+  const logSheet = ss.getSheetByName(SHEET_LOGS) || ss.insertSheet(SHEET_LOGS);
+  try {
+    logSheet.appendRow([new Date(), senderEmail, '-', 'Survey Remind Trigger', 'count=' + recipients.length]);
+  } catch (e) {}
+
+  let successCount = 0;
+  const failedList = [];
+
+  recipients.forEach((r) => {
+    const recipientEmail = String(r && r.email ? r.email : '').trim().toLowerCase();
+    const unanswered = (r && Array.isArray(r.unansweredSurveys)) ? r.unansweredSurveys : [];
+    try {
+      if (!recipientEmail) throw new Error('メールアドレスが不正です');
+      const uid = getSlackID(botToken, recipientEmail);
+      if (!uid) throw new Error('Slackアカウントなし');
+      const text = _buildSurveyReminderText('<@' + uid + '>', unanswered);
+      const res = UrlFetchApp.fetch('https://slack.com/api/chat.postMessage', {
+        method: 'post',
+        contentType: 'application/json',
+        headers: { 'Authorization': 'Bearer ' + botToken },
+        payload: JSON.stringify({ channel: uid, text: text, unfurl_links: false, unfurl_media: false }),
+        muteHttpExceptions: true
+      });
+      const json = JSON.parse(res.getContentText());
+      if (!json.ok) throw new Error(json.error || 'Unknown Error');
+      successCount++;
+      logSheet.appendRow([new Date(), senderEmail, recipientEmail, 'Survey Remind Success', 'unanswered=' + unanswered.length]);
+    } catch (e) {
+      const msg = String(e && e.message ? e.message : e);
+      failedList.push({ email: recipientEmail, name: String(r && r.name ? r.name : ''), error: msg });
+      try {
+        logSheet.appendRow([new Date(), senderEmail, recipientEmail, 'Survey Remind Failed', msg]);
+      } catch (e2) {}
+    }
+    Utilities.sleep(1200);
+  });
+
+  return { success: successCount, failed: failedList };
+}
+
 function saveFormDefinition(sessionToken, payload) {
   try {
     const login = getLoginUser(sessionToken);

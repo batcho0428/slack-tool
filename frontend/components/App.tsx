@@ -19,6 +19,10 @@ declare global {
 const APP_NAME = process.env.NEXT_PUBLIC_APP_NAME || 'Slack送信ツール';
 const APP_HEADER_COLOR = process.env.NEXT_PUBLIC_APP_HEADER_COLOR || '#1a237e';
 const API_TIMEOUT_MS = 60000;
+const API_TIMEOUT_OVERRIDES = {
+    collectSurveyReminderStatus: 180000,
+    sendSurveyReminderDMs: 300000
+};
 
 if (typeof window !== 'undefined') {
     window.APP_NAME = APP_NAME;
@@ -26,8 +30,9 @@ if (typeof window !== 'undefined') {
 }
 
 const runGas = (funcName, ...args) => {
+    const timeoutMs = API_TIMEOUT_OVERRIDES[funcName] || API_TIMEOUT_MS;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     const toFriendlyError = (err) => {
         const msg = err && err.message ? String(err.message) : String(err);
         if (/aborted|timeout/i.test(msg)) {
@@ -87,6 +92,14 @@ const runGas = (funcName, ...args) => {
             } else {
                 payload.payload = args[1] || {};
             }
+            break;
+        case 'collectSurveyReminderStatus':
+            payload.sessionToken = args[0];
+            payload.surveyRowIndices = args[1] || [];
+            break;
+        case 'sendSurveyReminderDMs':
+            payload.sessionToken = args[0];
+            payload.payload = args[1] || {};
             break;
         case 'deleteCollection':
             payload.sessionToken = args[0];
