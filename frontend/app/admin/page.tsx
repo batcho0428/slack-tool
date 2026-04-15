@@ -89,14 +89,25 @@ export default function AdminPage() {
     setRoles(Array.isArray(result?.roles) ? result.roles : []);
   };
 
+  const sortByPid = (items: any[]) => {
+    return [...items].sort((a, b) => {
+      const aPid = parseInt(String(a.pid || '0'), 10);
+      const bPid = parseInt(String(b.pid || '0'), 10);
+      return aPid - bPid;
+    });
+  };
+
   const isSaving = (kind: 'org' | 'dept' | 'role') => savingKind === kind;
 
   const submitAndReload = async (kind: 'org' | 'dept' | 'role', action: string, payload: any, closeModal: () => void) => {
     setSavingKind(kind);
+    setError('');
     try {
       await runGas(action, token, payload);
       await reload();
       closeModal();
+    } catch (err: any) {
+      setError(err?.message || String(err));
     } finally {
       setSavingKind(null);
     }
@@ -132,14 +143,25 @@ export default function AdminPage() {
     const f = new FormData(e.currentTarget);
     setError('');
     const pid = String(f.get('pid') || '');
-    const orgName = String(f.get('org') || '');
+    const orgName = String(f.get('org') || '').trim();
     const status = String(f.get('status') || '');
     const notMain = !!f.get('not_main_org');
     const genRaw = String(f.get('gen') || '').trim();
+
+    // 入力値の検証
+    if (!orgName) {
+      setError('局名を入力してください');
+      return;
+    }
     if (notMain && genRaw === '') {
       setError('主所属局外 (特命局) の場合、gen は必須です');
       return;
     }
+    if (notMain) {
+      setError('新規作成時は主所属局(not_main_org=false)のみ保存可能です');
+      return;
+    }
+
     const gen = genRaw === '' ? undefined : Number(genRaw);
     await submitAndReload('org', 'saveOrgMaster', {
       pid: pid,
@@ -153,10 +175,24 @@ export default function AdminPage() {
   const saveDept = async (e: any) => {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
+    const deptName = String(f.get('dept') || '').trim();
+    const orgPid = String(f.get('orgPid') || '').trim();
+
+    // 入力値の検証
+    if (!deptName) {
+      setError('部門名を入力してください');
+      return;
+    }
+    if (!orgPid) {
+      setError('所属局を選択してください');
+      return;
+    }
+    setError('');
+
     await submitAndReload('dept', 'saveDeptMaster', {
       pid: String(f.get('pid') || ''),
-      dept: String(f.get('dept') || ''),
-      orgPid: String(f.get('orgPid') || ''),
+      dept: deptName,
+      orgPid: orgPid,
       status: String(f.get('status') || ''),
       not_main_dept: !!f.get('not_main_dept')
     }, () => setDeptModal({ open: false, item: null }));
@@ -165,10 +201,25 @@ export default function AdminPage() {
   const saveRole = async (e: any) => {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
+    const roleName = String(f.get('role') || '').trim();
+    const genRaw = String(f.get('gen') || '').trim();
+
+    // 入力値の検証
+    if (!roleName) {
+      setError('役職名を入力してください');
+      return;
+    }
+    if (!genRaw) {
+      setError('genを入力してください');
+      return;
+    }
+    setError('');
+
+    const gen = Number(genRaw);
     await submitAndReload('role', 'saveRoleMaster', {
       pid: String(f.get('pid') || ''),
-      role: String(f.get('role') || ''),
-      gen: Number(f.get('gen') || 0),
+      role: roleName,
+      gen: gen,
       not_main_role: !!f.get('not_main_role')
     }, () => setRoleModal({ open: false, item: null }));
   };
@@ -199,7 +250,7 @@ export default function AdminPage() {
               <table className="w-full text-sm border">
                 <thead className="bg-gray-100"><tr><th className="p-2 text-left">id</th><th className="p-2 text-left">局名</th><th className="p-2 text-left">gen</th><th className="p-2 text-left">状態</th><th className="p-2 text-left">所属区分</th><th className="p-2"></th></tr></thead>
                 <tbody>
-                  {orgs.map(o => <tr key={o.pid} className="border-t"><td className="p-2">{padOrgIdForDisplay(o.pid)}</td><td className="p-2">{o.org}</td><td className="p-2">{o.gen || ''}</td><td className="p-2">{statusLabel(o.status)}</td><td className="p-2">{o.not_main_org ? '特命局' : '主所属局'}</td><td className="p-2 text-right"><button className="px-2 py-1 border rounded" onClick={() => setOrgModal({ open: true, item: o })}>編集</button></td></tr>)}
+                  {sortByPid(orgs).map(o => <tr key={o.pid} className="border-t"><td className="p-2">{padOrgIdForDisplay(o.pid)}</td><td className="p-2">{o.org}</td><td className="p-2">{o.gen || ''}</td><td className="p-2">{statusLabel(o.status)}</td><td className="p-2">{o.not_main_org ? '特命局' : '主所属局'}</td><td className="p-2 text-right"><button className="px-2 py-1 border rounded" onClick={() => setOrgModal({ open: true, item: o })}>編集</button></td></tr>)}
                 </tbody>
               </table>
             </div>
@@ -214,7 +265,7 @@ export default function AdminPage() {
               <table className="w-full text-sm border">
                 <thead className="bg-gray-100"><tr><th className="p-2 text-left">id</th><th className="p-2 text-left">部門名</th><th className="p-2 text-left">局</th><th className="p-2 text-left">状態</th><th className="p-2 text-left">所属区分</th><th className="p-2"></th></tr></thead>
                 <tbody>
-                  {depts.map(d => <tr key={d.pid} className="border-t"><td className="p-2">{padDeptIdForDisplay(d.pid)}</td><td className="p-2">{d.dept}</td><td className="p-2">{d.org || d.orgPid}</td><td className="p-2">{statusLabel(d.status)}</td><td className="p-2">{d.not_main_dept ? '特命部門' : '主所属部門'}</td><td className="p-2 text-right"><button className="px-2 py-1 border rounded" onClick={() => setDeptModal({ open: true, item: d })}>編集</button></td></tr>)}
+                  {sortByPid(depts).map(d => <tr key={d.pid} className="border-t"><td className="p-2">{padDeptIdForDisplay(d.pid)}</td><td className="p-2">{d.dept}</td><td className="p-2">{d.org || d.orgPid}</td><td className="p-2">{statusLabel(d.status)}</td><td className="p-2">{d.not_main_dept ? '特命部門' : '主所属部門'}</td><td className="p-2 text-right"><button className="px-2 py-1 border rounded" onClick={() => setDeptModal({ open: true, item: d })}>編集</button></td></tr>)}
                 </tbody>
               </table>
             </div>
@@ -229,7 +280,7 @@ export default function AdminPage() {
               <table className="w-full text-sm border">
                 <thead className="bg-gray-100"><tr><th className="p-2 text-left">id</th><th className="p-2 text-left">役職</th><th className="p-2 text-left">gen</th><th className="p-2 text-left">役職区分</th><th className="p-2"></th></tr></thead>
                 <tbody>
-                  {roles.map(r => <tr key={r.pid} className="border-t"><td className="p-2">{r.pid}</td><td className="p-2">{r.role}</td><td className="p-2">{r.gen || ''}</td><td className="p-2">{r.not_main_role ? '特命役職' : '主所属役職'}</td><td className="p-2 text-right"><button className="px-2 py-1 border rounded" onClick={() => setRoleModal({ open: true, item: r })}>編集</button></td></tr>)}
+                  {sortByPid(roles).map(r => <tr key={r.pid} className="border-t"><td className="p-2">{r.pid}</td><td className="p-2">{r.role}</td><td className="p-2">{r.gen || ''}</td><td className="p-2">{r.not_main_role ? '特命役職' : '主所属役職'}</td><td className="p-2 text-right"><button className="px-2 py-1 border rounded" onClick={() => setRoleModal({ open: true, item: r })}>編集</button></td></tr>)}
                 </tbody>
               </table>
             </div>
@@ -249,14 +300,29 @@ export default function AdminPage() {
               </div>
             )}
             <h2 className="text-lg font-bold">局の編集</h2>
-            <input type="hidden" name="pid" value={orgModal.item?.pid || ''} />
-            <input value={padOrgIdForDisplay(orgModal.item?.pid || '')} className="w-full border p-2 rounded bg-gray-100" placeholder="id(新規時は自動採番)" disabled />
-            <input name="org" defaultValue={orgModal.item?.org || ''} className="w-full border p-2 rounded" placeholder="局名" required disabled={isSaving('org')} />
-            <input type="number" name="gen" defaultValue={String(orgModal.item?.gen || '')} className="w-full border p-2 rounded" placeholder="gen (not_main_org の場合必須)" disabled={isSaving('org')} />
-            <select name="status" defaultValue={isActiveStatus(orgModal.item?.status) ? '' : '1'} className="w-full border p-2 rounded" disabled={isSaving('org')}>
-              <option value="">有効</option><option value="1">無効</option>
-            </select>
-            <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="not_main_org" defaultChecked={!!orgModal.item?.not_main_org} disabled={isSaving('org')} /> 主所属局外</label>
+            <div className="space-y-1">
+              <label className="text-xs text-gray-500">pid</label>
+              <input type="hidden" name="pid" value={orgModal.item?.pid || ''} />
+              <input value={padOrgIdForDisplay(orgModal.item?.pid || '')} className="w-full border p-2 rounded bg-gray-100" placeholder="id(新規時は自動採番)" disabled />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-gray-500">input</label>
+              <input name="org" defaultValue={orgModal.item?.org || ''} className="w-full border p-2 rounded" placeholder="局名 *必須" required disabled={isSaving('org')} />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-gray-500">input</label>
+              <input type="number" name="gen" defaultValue={String(orgModal.item?.gen || '')} className="w-full border p-2 rounded" placeholder="gen (not_main_org の場合必須)" disabled={isSaving('org')} />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-gray-500">input</label>
+              <select name="status" defaultValue={isActiveStatus(orgModal.item?.status) ? '' : '1'} className="w-full border p-2 rounded" disabled={isSaving('org')}>
+                <option value="">有効</option><option value="1">無効</option>
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-gray-500">input</label>
+              <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="not_main_org" defaultChecked={!!orgModal.item?.not_main_org} disabled={isSaving('org')} /> 主所属局外</label>
+            </div>
             <div className="text-xs text-gray-500">note: 主所属局外 (特命局) の場合、`gen` を2桁で入力してください。局 pid は `gen(2桁)+通し番号(1桁)` の3桁になります。</div>
             <div className="flex justify-end gap-2"><button type="button" onClick={() => setOrgModal({ open: false, item: null })} className="px-3 py-2 rounded bg-gray-100" disabled={isSaving('org')}>キャンセル</button><button className="px-3 py-2 rounded bg-blue-600 text-white" disabled={isSaving('org')}>保存</button></div>
           </form>
@@ -275,17 +341,32 @@ export default function AdminPage() {
               </div>
             )}
             <h2 className="text-lg font-bold">部門の編集</h2>
-            <input type="hidden" name="pid" value={deptModal.item?.pid || ''} />
-            <input value={padDeptIdForDisplay(deptModal.item?.pid || '')} className="w-full border p-2 rounded bg-gray-100" placeholder="id(新規時は自動採番)" disabled />
-            <input name="dept" defaultValue={deptModal.item?.dept || ''} className="w-full border p-2 rounded" placeholder="部門名" required disabled={isSaving('dept')} />
-            <select name="orgPid" defaultValue={deptModal.item?.orgPid || ''} className="w-full border p-2 rounded" required disabled={isSaving('dept')}>
-              <option value="">所属局を選択</option>
-              {orgs.map(o => <option key={o.pid} value={o.pid}>{o.org} ({padOrgIdForDisplay(o.pid)})</option>)}
-            </select>
-            <select name="status" defaultValue={isActiveStatus(deptModal.item?.status) ? '' : '1'} className="w-full border p-2 rounded" disabled={isSaving('dept')}>
-              <option value="">有効</option><option value="1">無効</option>
-            </select>
-            <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="not_main_dept" defaultChecked={!!deptModal.item?.not_main_dept} disabled={isSaving('dept')} /> 主所属部門外</label>
+            <div className="space-y-1">
+              <label className="text-xs text-gray-500">pid</label>
+              <input type="hidden" name="pid" value={deptModal.item?.pid || ''} />
+              <input value={padDeptIdForDisplay(deptModal.item?.pid || '')} className="w-full border p-2 rounded bg-gray-100" placeholder="id(新規時は自動採番)" disabled />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-gray-500">input</label>
+              <input name="dept" defaultValue={deptModal.item?.dept || ''} className="w-full border p-2 rounded" placeholder="部門名 *必須" required disabled={isSaving('dept')} />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-gray-500">input</label>
+              <select name="orgPid" defaultValue={deptModal.item?.orgPid || ''} className="w-full border p-2 rounded" required disabled={isSaving('dept')}>
+                <option value="">所属局を選択 *必須</option>
+                {sortByPid(orgs).map(o => <option key={o.pid} value={o.pid}>{o.org} ({padOrgIdForDisplay(o.pid)})</option>)}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-gray-500">input</label>
+              <select name="status" defaultValue={isActiveStatus(deptModal.item?.status) ? '' : '1'} className="w-full border p-2 rounded" disabled={isSaving('dept')}>
+                <option value="">有効</option><option value="1">無効</option>
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-gray-500">input</label>
+              <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="not_main_dept" defaultChecked={!!deptModal.item?.not_main_dept} disabled={isSaving('dept')} /> 主所属部門外</label>
+            </div>
             <div className="flex justify-end gap-2"><button type="button" onClick={() => setDeptModal({ open: false, item: null })} className="px-3 py-2 rounded bg-gray-100" disabled={isSaving('dept')}>キャンセル</button><button className="px-3 py-2 rounded bg-blue-600 text-white" disabled={isSaving('dept')}>保存</button></div>
           </form>
         </div>
@@ -303,11 +384,24 @@ export default function AdminPage() {
               </div>
             )}
             <h2 className="text-lg font-bold">役職の編集</h2>
-            <input type="hidden" name="pid" value={roleModal.item?.pid || ''} />
-            <input value={roleModal.item?.pid || ''} className="w-full border p-2 rounded bg-gray-100" placeholder="id(新規時は自動採番)" disabled />
-            <input name="role" defaultValue={roleModal.item?.role || ''} className="w-full border p-2 rounded" placeholder="役職名" required disabled={isSaving('role')} />
-            <input type="number" name="gen" defaultValue={String(roleModal.item?.gen || '')} className="w-full border p-2 rounded" placeholder="gen" disabled={isSaving('role')} />
-            <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="not_main_role" defaultChecked={!!roleModal.item?.not_main_role} disabled={isSaving('role')} /> 主所属役職外</label>
+            <div className="space-y-1">
+              <label className="text-xs text-gray-500">pid</label>
+              <input type="hidden" name="pid" value={roleModal.item?.pid || ''} />
+              <input value={roleModal.item?.pid || ''} className="w-full border p-2 rounded bg-gray-100" placeholder="id(新規時は自動採番)" disabled />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-gray-500">input</label>
+              <input name="role" defaultValue={roleModal.item?.role || ''} className="w-full border p-2 rounded" placeholder="役職名 *必須" required disabled={isSaving('role')} />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-gray-500">input</label>
+              <input type="number" name="gen" defaultValue={String(roleModal.item?.gen || '')} className="w-full border p-2 rounded" placeholder="gen *必須" required disabled={isSaving('role')} />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-gray-500">input</label>
+              <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="not_main_role" defaultChecked={!!roleModal.item?.not_main_role} disabled={isSaving('role')} /> 主所属役職外</label>
+            </div>
+            <div className="text-xs text-gray-500">note: 役職 pid は `gen(2桁)+通し番号(1桁)` の3桁になります。</div>
             <div className="flex justify-end gap-2"><button type="button" onClick={() => setRoleModal({ open: false, item: null })} className="px-3 py-2 rounded bg-gray-100" disabled={isSaving('role')}>キャンセル</button><button className="px-3 py-2 rounded bg-blue-600 text-white" disabled={isSaving('role')}>保存</button></div>
           </form>
         </div>

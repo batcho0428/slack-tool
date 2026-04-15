@@ -131,8 +131,8 @@ import { useEffect, useState } from 'react';
                     spreadsheetRef: item.spreadsheetRef || '',
                     formUrl: item.formUrl || '',
                     title: item.title || '',
-                    inChargeOrg: item.inChargeOrg || item.inChargeOrgCode || '',
-                    inChargeDept: item.inChargeDept || item.inChargeDeptCode || '',
+                    inChargeOrg: item.inChargeOrg || '',
+                    inChargeDept: item.inChargeDept || '',
                     collecting: !!item.collecting,
                     scoreName: item.scoreName || '',
                     scoreUnit: item.scoreUnit || ''

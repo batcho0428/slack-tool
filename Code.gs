@@ -203,11 +203,18 @@ function _loadMasterMaps(ss) {
   const field = readMap(SHEET_FIELD, 0, 1, 1, 1);
 
   const deptToOrgPid = {};
+  const deptByOrgAndName = {}; // {orgPid: {deptName: deptPid}} to handle multi-org dept duplicates
   dept.rows.forEach(r => {
     const deptPid = String(r[0] || '').trim();
     const orgPid = String(r[2] || '').trim();
-    if (deptPid && orgPid) deptToOrgPid[deptPid] = orgPid;
+    if (deptPid && orgPid) {
+      deptToOrgPid[deptPid] = orgPid;
+      if (!deptByOrgAndName[orgPid]) deptByOrgAndName[orgPid] = {};
+      const deptName = String(r[1] || '').trim();
+      if (deptName) deptByOrgAndName[orgPid][deptName] = deptPid;
+    }
   });
+  dept.deptByOrgAndName = deptByOrgAndName;
 
   return { grade, org, dept, role, field, deptToOrgPid };
 }

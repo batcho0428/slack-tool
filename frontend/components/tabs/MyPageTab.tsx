@@ -419,7 +419,7 @@ import SearchModal from '../shared/SearchModal';
                                         <label className="text-[10px] text-gray-500">所属部門</label>
                                         <select value={orgData.dept} onChange={e=>handleOrgChange(idx, 'dept', e.target.value)} className="w-full border p-1 rounded text-sm bg-white">
                                             <option value="">なし</option>
-                                            {options.deptMaster.filter(d=>(!orgData.org || d.org===orgData.org) && (idx !== 0 || !d.notMain || d.dept === orgData.dept)).map(d=><option key={d.dept + ':' + (d.pid || '')} value={d.dept}>{d.dept}</option>)}
+                                            {options.deptMaster.filter(d=>(!orgData.org || d.org===orgData.org) && (idx !== 0 || !d.notMain || d.pid === orgData.dept)).map(d=><option key={d.pid} value={d.pid}>{d.dept}</option>)}
                                         </select>
                                     </div>
                                     <div className="flex-1">

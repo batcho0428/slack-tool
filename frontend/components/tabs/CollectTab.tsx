@@ -855,8 +855,8 @@ import { useEffect, useRef, useState } from 'react';
                                                     if (sel) {
                                                         setSheetUrl(sel.spreadsheetRef || sel.formUrl || '');
                                                         if (!title) setTitle(sel.title || '');
-                                                        setSelectedOrg(sel.inChargeOrg || sel.inChargeOrgCode || '');
-                                                        setSelectedDept(sel.inChargeDept || sel.inChargeDeptCode || '');
+                                                        setSelectedOrg(sel.inChargeOrg || '');
+                                                        setSelectedDept(sel.inChargeDept || '');
                                                     } else {
                                                         setSheetUrl('');
                                                         setSelectedOrg(''); setSelectedDept('');
@@ -932,8 +932,8 @@ import { useEffect, useRef, useState } from 'react';
                                                 setEditingId(c.id || '');
                                                 setTitle(c.title || '');
                                                 setSheetUrl(c.spreadsheetUrl || '');
-                                                setSelectedOrg(c.inChargeOrg || c.inChargeOrgCode || '');
-                                                setSelectedDept(c.inChargeDept || c.inChargeDeptCode || '');
+                                                setSelectedOrg(c.inChargeOrg || '');
+                                                setSelectedDept(c.inChargeDept || '');
                                                 setEditSelectOpen(false);
                                                 setModalOpen(true);
                                                 setFormsLoading(true);

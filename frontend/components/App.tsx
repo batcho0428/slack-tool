@@ -3172,7 +3172,7 @@ const fetchAuthUrl = async () => {
 
             const EMPTY_NEW_PROFILE = () => ({
                 name: '', nameEn: '', email: '', studentId: '', grade: '', field: '', phone: '', birthday: '', almaMater: '', carOwner: false, isAdmin: false,
-                orgs: [{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''}],
+                orgs: [{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''}],
                 canEditNameEmail: true
             });
 
@@ -3436,7 +3436,7 @@ const fetchAuthUrl = async () => {
                             </div>
                         )}
                         <br/><br/>
-                        <h3 className="text-sm font-bold text-gray-700 mb-3 border-b pb-1">所属情報 (最大5つ)</h3>
+                        <h3 className="text-sm font-bold text-gray-700 mb-3 border-b pb-1">所属情報 (最大10つ)</h3>
                         <div className="text-xs text-gray-500 mt-1">(1つ目の所属先は主となる所属先です。主所属局は管理者以外変更できません。<br/>兼局先も登録してください。<br/>執行部は兼局先として登録してください。)</div>
                         <div className="space-y-3 mb-6">
                             {profile.orgs.map((orgData, idx) => (
@@ -3512,7 +3512,7 @@ const fetchAuthUrl = async () => {
                                                     {r.grade} {r.field}
                                                 </div>
                                             )}
-                                            <div className="text-xs text-gray-500 truncate mt-1" title={r.departmentText || r.department}>{r.departmentText || r.department}</div>
+                                            <div className="text-xs text-gray-500 truncate mt-1" title={r.departmentText || [Array.isArray(r.org) ? r.org.join(', ') : r.org, Array.isArray(r.department) ? r.department.join(', ') : r.department, Array.isArray(r.role) ? r.role.join(', ') : r.role].filter(Boolean).join(' / ')}>{r.departmentText || [Array.isArray(r.org) ? r.org.join(', ') : r.org, Array.isArray(r.department) ? r.department.join(', ') : r.department, Array.isArray(r.role) ? r.role.join(', ') : r.role].filter(Boolean).join(' / ')}</div>
                                         </div>
                                         <button onClick={()=>setRecipients(recipients.filter(x=>x.email!==r.email))} className="text-gray-400 hover:text-red-500 ml-2 p-2">
                                             <i className="fas fa-times text-lg"></i>
@@ -3876,7 +3876,7 @@ const fetchAuthUrl = async () => {
                                                 <i className="fas fa-school mr-1"></i>{r.grade} {r.field}
                                             </div>
                                         </div>
-                                        <div className="text-xs text-gray-500 truncate mt-0.5">{r.departmentText || r.department}</div>
+                                        <div className="text-xs text-gray-500 truncate mt-0.5">{r.departmentText || [Array.isArray(r.org) ? r.org.join(', ') : r.org, Array.isArray(r.department) ? r.department.join(', ') : r.department, Array.isArray(r.role) ? r.role.join(', ') : r.role].filter(Boolean).join(' / ')}</div>
                                     </div>
                                 </div>
                             ))}
