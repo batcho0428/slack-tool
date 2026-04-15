@@ -45,6 +45,8 @@ const runGas = (funcName, ...args) => {
         case 'getLoginUser':
         case 'getUserProfile':
         case 'listSurveys':
+        case 'getAuthUrl':
+        case 'listFormDefinitions':
         case 'listCollections':
         case 'getChannels':
         case 'getSearchOptions':
@@ -65,6 +67,11 @@ const runGas = (funcName, ...args) => {
             payload.sessionToken = args[0];
             payload.userObj = args[1] || {};
             break;
+        case 'updateUserProfile':
+            payload.sessionToken = args[0];
+            payload.formData = args[1] || {};
+            payload.targetEmail = args[2];
+            break;
         case 'getSurveyDetails':
             payload.sessionToken = args[0];
             payload.spreadsheetRef = args[1];
@@ -72,9 +79,14 @@ const runGas = (funcName, ...args) => {
             break;
         case 'createCollection':
         case 'updateCollection':
+        case 'saveFormDefinition':
             payload.sessionToken = args[0];
-            if (funcName === 'updateCollection') payload.collectionId = args[1];
-            payload.payload = funcName === 'createCollection' ? (args[1] || {}) : (args[2] || {});
+            if (funcName === 'updateCollection') {
+                payload.collectionId = args[1];
+                payload.payload = args[2] || {};
+            } else {
+                payload.payload = args[1] || {};
+            }
             break;
         case 'deleteCollection':
             payload.sessionToken = args[0];
@@ -319,11 +331,18 @@ const fetchAuthUrl = async () => {
             const checkLogin = (token) => {
                 runGas('getLoginUser', token).then(res => {
                     if (res.status === 'authorized') {
-                        setUser({ ...res.user, hasToken: !!res.hasToken });
-                        setView('main');
-                        if (!res.hasToken) {
-                            fetchAuthUrl().then(setAuthUrl).catch((e) => setErrorMsg(e.message || String(e)));
-                        }
+                        runGas('getUserProfile', token)
+                            .then((profile) => {
+                                setUser({ ...res.user, hasToken: !!res.hasToken, isAdmin: !!(profile && profile.isAdmin) });
+                                setView('main');
+                                if (!res.hasToken) {
+                                    fetchAuthUrl().then(setAuthUrl).catch((e) => setErrorMsg(e.message || String(e)));
+                                }
+                            })
+                            .catch(() => {
+                                setUser({ ...res.user, hasToken: !!res.hasToken, isAdmin: false });
+                                setView('main');
+                            });
                     }
 
                     else if (res.status === 'guest') {
@@ -363,6 +382,11 @@ const fetchAuthUrl = async () => {
                             {user && (
                                 <div className="flex items-center text-sm bg-white/10 px-2 py-1 md:px-3 rounded-full">
                                     <span className="mr-1 md:mr-2 truncate max-w-[100px] md:max-w-[150px] text-xs md:text-sm">{user.name}</span>
+                                    {user.isAdmin && (
+                                        <button onClick={() => { window.location.href = '/admin'; }} className="hover:text-yellow-200 ml-1 md:ml-2 p-1" title="管理者ページ">
+                                            <i className="fas fa-user-shield"></i>
+                                        </button>
+                                    )}
                                     <button onClick={()=>setLogoutDialog(true)} className="hover:text-red-200 ml-1 md:ml-2 p-1" title="ログアウト">
                                         <i className="fas fa-sign-out-alt"></i>
                                     </button>
@@ -1485,7 +1509,17 @@ const fetchAuthUrl = async () => {
                     const token = localStorage.getItem('slack_app_session');
                     const criteria = org ? { org: org, status: 'active' } : { status: 'active' };
                     const res = await runGas('searchRecipients', criteria);
-                    const mapped = (res || []).map(r => ({ name: r.name, email: r.email, grade: r.grade, field: r.field, department: r.department }));
+                    const mapped = (res || []).map(r => ({
+                        name: r.name,
+                        email: r.email,
+                        grade: r.grade,
+                        field: r.field,
+                        department: r.departmentText || [
+                            Array.isArray(r.org) ? r.org.join(', ') : r.org,
+                            Array.isArray(r.department) ? r.department.join(', ') : r.department,
+                            Array.isArray(r.role) ? r.role.join(', ') : r.role
+                        ].filter(Boolean).join(' / ')
+                    }));
                     setFlowPeople(mapped);
                     // derive grades
                     const grades = Array.from(new Set(mapped.map(m=>m.grade).filter(Boolean)));
@@ -2403,6 +2437,21 @@ const fetchAuthUrl = async () => {
                 { key: '所属局5', label: '所属局5', adminOnly: false },
                 { key: '所属部門5', label: '所属部門5', adminOnly: false },
                 { key: '役職5', label: '役職5', adminOnly: false },
+                { key: '所属局6', label: '所属局6', adminOnly: false },
+                { key: '所属部門6', label: '所属部門6', adminOnly: false },
+                { key: '役職6', label: '役職6', adminOnly: false },
+                { key: '所属局7', label: '所属局7', adminOnly: false },
+                { key: '所属部門7', label: '所属部門7', adminOnly: false },
+                { key: '役職7', label: '役職7', adminOnly: false },
+                { key: '所属局8', label: '所属局8', adminOnly: false },
+                { key: '所属部門8', label: '所属部門8', adminOnly: false },
+                { key: '役職8', label: '役職8', adminOnly: false },
+                { key: '所属局9', label: '所属局9', adminOnly: false },
+                { key: '所属部門9', label: '所属部門9', adminOnly: false },
+                { key: '役職9', label: '役職9', adminOnly: false },
+                { key: '所属局10', label: '所属局10', adminOnly: false },
+                { key: '所属部門10', label: '所属部門10', adminOnly: false },
+                { key: '役職10', label: '役職10', adminOnly: false },
                 { key: '出身校', label: '出身校', adminOnly: true },
                 { key: '退局', label: '退局ステータス', adminOnly: true },
                 { key: '次年度継続', label: '次年度継続ステータス', adminOnly: true },
@@ -2411,20 +2460,20 @@ const fetchAuthUrl = async () => {
 
             const [selected, setSelected] = useState(new Set());
             const [selectAll, setSelectAll] = useState(false);
-            // atomic keys and display grouping for所属2-5
+            // atomic keys and display grouping for所属2-10
             const availableAtomicKeys = fields.map(f=>f.key);
             const displayFields = (()=>{
                 const out = [];
                 let skippingGroup = false;
                 for (const f of fields) {
-                    // 所属2-5グループの開始を検出
+                    // 所属2-10グループの開始を検出
                     if (f.key === '所属局2' && !skippingGroup) {
-                        out.push({ key: '所属2-5', label: '所属局・部門・役職（2～5）', isGroup: true, adminOnly: false });
+                        out.push({ key: '所属2-10', label: '所属局・部門・役職（2～10）', isGroup: true, adminOnly: false });
                         skippingGroup = true;
                         continue;
                     }
-                    // 所属2-5グループに属するアイテムをスキップ
-                    if (/^(所属局[2-5]|所属部門[2-5]|役職[2-5])$/.test(f.key)) {
+                    // 所属2-10グループに属するアイテムをスキップ
+                    if (/^(所属局([2-9]|10)|所属部門([2-9]|10)|役職([2-9]|10))$/.test(f.key)) {
                         continue;
                     }
                     // 他のアイテム（所属1を含む）は通常追加
@@ -2535,10 +2584,10 @@ const fetchAuthUrl = async () => {
             const toggleField = (k, adminOnly) => {
                 if (adminOnly && !isAdmin) return;
                 const s = new Set(Array.from(selected));
-                // handle grouped key for 所属2-5: toggle all atomic members
-                if (k === '所属2-5') {
+                // handle grouped key for 所属2-10: toggle all atomic members
+                if (k === '所属2-10') {
                     const atomic = [];
-                    for (let idx = 2; idx <= 5; idx++) {
+                    for (let idx = 2; idx <= 10; idx++) {
                         atomic.push(`所属局${idx}`);
                         atomic.push(`所属部門${idx}`);
                         atomic.push(`役職${idx}`);
@@ -2628,8 +2677,8 @@ const fetchAuthUrl = async () => {
                 const arr = Array.from(selected);
                 const expanded = [];
                 for (const v of arr) {
-                    if (v === '所属2-5') {
-                        for (let idx = 2; idx <= 5; idx++) {
+                    if (v === '所属2-10') {
+                        for (let idx = 2; idx <= 10; idx++) {
                             expanded.push(`所属局${idx}`);
                             expanded.push(`所属部門${idx}`);
                             expanded.push(`役職${idx}`);
@@ -2776,7 +2825,7 @@ const fetchAuthUrl = async () => {
                                             {/* group checked if all atomic members selected */}
                                             <input type="checkbox" checked={(() => {
                                                 const atomic = [];
-                                                for (let idx = 2; idx <= 5; idx++) { atomic.push(`所属局${idx}`); atomic.push(`所属部門${idx}`); atomic.push(`役職${idx}`); }
+                                                for (let idx = 2; idx <= 10; idx++) { atomic.push(`所属局${idx}`); atomic.push(`所属部門${idx}`); atomic.push(`役職${idx}`); }
                                                 return atomic.every(a => selected.has(a));
                                             })()} disabled={f.adminOnly && !isAdmin} readOnly className="mr-3 w-4 h-4" />
                                             <span className="text-sm">{f.label}</span>
@@ -3123,7 +3172,7 @@ const fetchAuthUrl = async () => {
 
             const EMPTY_NEW_PROFILE = () => ({
                 name: '', nameEn: '', email: '', studentId: '', grade: '', field: '', phone: '', birthday: '', almaMater: '', carOwner: false, isAdmin: false,
-                orgs: [{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''}],
+                orgs: [{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''},{org:'',dept:'',role:''}],
                 canEditNameEmail: true
             });
 
@@ -3387,7 +3436,7 @@ const fetchAuthUrl = async () => {
                             </div>
                         )}
                         <br/><br/>
-                        <h3 className="text-sm font-bold text-gray-700 mb-3 border-b pb-1">所属情報 (最大5つ)</h3>
+                        <h3 className="text-sm font-bold text-gray-700 mb-3 border-b pb-1">所属情報 (最大10つ)</h3>
                         <div className="text-xs text-gray-500 mt-1">(1つ目の所属先は主となる所属先です。主所属局は管理者以外変更できません。<br/>兼局先も登録してください。<br/>執行部は兼局先として登録してください。)</div>
                         <div className="space-y-3 mb-6">
                             {profile.orgs.map((orgData, idx) => (
@@ -3463,7 +3512,7 @@ const fetchAuthUrl = async () => {
                                                     {r.grade} {r.field}
                                                 </div>
                                             )}
-                                            <div className="text-xs text-gray-500 truncate mt-1" title={r.department}>{r.department}</div>
+                                            <div className="text-xs text-gray-500 truncate mt-1" title={r.departmentText || [Array.isArray(r.org) ? r.org.join(', ') : r.org, Array.isArray(r.department) ? r.department.join(', ') : r.department, Array.isArray(r.role) ? r.role.join(', ') : r.role].filter(Boolean).join(' / ')}>{r.departmentText || [Array.isArray(r.org) ? r.org.join(', ') : r.org, Array.isArray(r.department) ? r.department.join(', ') : r.department, Array.isArray(r.role) ? r.role.join(', ') : r.role].filter(Boolean).join(' / ')}</div>
                                         </div>
                                         <button onClick={()=>setRecipients(recipients.filter(x=>x.email!==r.email))} className="text-gray-400 hover:text-red-500 ml-2 p-2">
                                             <i className="fas fa-times text-lg"></i>
@@ -3827,7 +3876,7 @@ const fetchAuthUrl = async () => {
                                                 <i className="fas fa-school mr-1"></i>{r.grade} {r.field}
                                             </div>
                                         </div>
-                                        <div className="text-xs text-gray-500 truncate mt-0.5">{r.department}</div>
+                                        <div className="text-xs text-gray-500 truncate mt-0.5">{r.departmentText || [Array.isArray(r.org) ? r.org.join(', ') : r.org, Array.isArray(r.department) ? r.department.join(', ') : r.department, Array.isArray(r.role) ? r.role.join(', ') : r.role].filter(Boolean).join(' / ')}</div>
                                     </div>
                                 </div>
                             ))}

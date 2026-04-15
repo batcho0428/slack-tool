@@ -35,13 +35,46 @@ import { useEffect, useState } from 'react';
                 scoreUnit: ''
             });
 
+            const orgMasterList = Array.isArray(formOptions && formOptions.orgMaster) ? formOptions.orgMaster : [];
+            const deptMasterList = Array.isArray(formOptions && formOptions.deptMaster) ? formOptions.deptMaster : [];
+
+            const resolveOrgLabel = (orgCode) => {
+                const code = String(orgCode || '').trim();
+                if (!code) return '';
+                const found = orgMasterList.find(item => String(item.pid || '').trim() === code);
+                return (found && found.org) ? found.org : code;
+            };
+
+            const resolveDeptLabel = (deptCode) => {
+                const code = String(deptCode || '').trim();
+                if (!code) return '';
+                const found = deptMasterList.find(item => String(item.pid || '').trim() === code);
+                return (found && found.dept) ? found.dept : code;
+            };
+
+            const formatAffiliationLabel = (orgCode, deptCode) => {
+                const orgLabel = resolveOrgLabel(orgCode);
+                const deptLabel = resolveDeptLabel(deptCode);
+                if (deptLabel && deptLabel !== orgLabel) return (orgLabel || '-') + ' / ' + deptLabel;
+                return orgLabel || deptLabel || '-';
+            };
+
             const formIsValid = (formDraft && typeof formDraft === 'object') ? ((formDraft.title || '').toString().trim().length > 0 && (((formDraft.spreadsheetRef||'').toString().trim().length > 0) || ((formDraft.formUrl||'').toString().trim().length > 0))) : false;
 
             useEffect(() => {
                 setLoading(true); setErr('');
                 const token = localStorage.getItem('slack_app_session');
                 runGas('listSurveys', token).then(res => {
-                    setSurveys(res || []);
+                    if (Array.isArray(res)) {
+                        setSurveys(res);
+                        return;
+                    }
+                    if (res && res.success === false) {
+                        setSurveys([]);
+                        setErr(res.message || 'アンケート一覧の取得に失敗しました');
+                        return;
+                    }
+                    setSurveys([]);
                 }).catch(e => setErr(e.message || e)).finally(()=>setLoading(false));
 
                 runGas('getUserProfile', token)
@@ -117,7 +150,14 @@ import { useEffect, useState } from 'react';
                     setFormEditOpen(false);
                     loadFormDefs();
                     const list = await runGas('listSurveys', token);
-                    if (Array.isArray(list)) setSurveys(list);
+                    if (Array.isArray(list)) {
+                        setSurveys(list);
+                    } else if (list && list.success === false) {
+                        setSurveys([]);
+                        setErr(list.message || 'アンケート一覧の取得に失敗しました');
+                    } else {
+                        setSurveys([]);
+                    }
                 } catch (e) {
                     alert(e.message || e);
                 } finally {
@@ -211,7 +251,7 @@ import { useEffect, useState } from 'react';
                                                     <div key={i} onClick={() => openForm(s)} role="button" tabIndex={0} className="flex items-start justify-between p-3 border rounded hover:shadow-sm cursor-pointer">
                                                         <div>
                                                             <div className="font-medium">{s.title}</div>
-                                                            <div className="text-xs text-gray-600">{(s.inChargeOrg || '-') + (s.inChargeDept ? (' / ' + s.inChargeDept) : '')}</div>
+                                                            <div className="text-xs text-gray-600">{formatAffiliationLabel(s.inChargeOrg || s.inChargeOrgCode, s.inChargeDept || s.inChargeDeptCode)}</div>
                                                         </div>
                                                         <div className="flex items-center gap-2">
                                                             {isCollectingFlag(s) && <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded">収集中</span>}
@@ -241,7 +281,7 @@ import { useEffect, useState } from 'react';
                                             {answered.map((s, i) => (
                                                 <tr key={i} onClick={() => openDetails(s)} role="button" tabIndex={0} className={`${'hover:bg-gray-50 cursor-pointer'} ${selected===(s.spreadsheetUrl || s.spreadsheetId)? 'bg-blue-50':''}`}>
                                                     <td className="px-3 py-2 border-t">{s.title}</td>
-                                                    <td className="px-3 py-2 border-t text-sm text-gray-700">{(s.inChargeOrg || '-') + (s.inChargeDept ? (' / ' + s.inChargeDept) : '')}</td>
+                                                    <td className="px-3 py-2 border-t text-sm text-gray-700">{formatAffiliationLabel(s.inChargeOrg || s.inChargeOrgCode, s.inChargeDept || s.inChargeDeptCode)}</td>
                                                     <td className="px-3 py-2 border-t">{s.latestScoreFormatted ? s.latestScoreFormatted : (s.latestScore !== null && typeof s.latestScore !== 'undefined' ? String(s.latestScore) + (s.scoreUnit ? (' ' + s.scoreUnit) : '') : '-')}</td>
                                                     <td className="px-3 py-2 border-t">{s.latestResponseDate ? formatDateJP(s.latestResponseDate) : '-'}</td>
                                                 </tr>
@@ -271,7 +311,7 @@ import { useEffect, useState } from 'react';
                                             <div key={i} className="py-3 flex items-center justify-between">
                                                 <div className="min-w-0">
                                                     <div className="font-medium truncate">{f.title || f.spreadsheetRef || f.formUrl || '無題'}</div>
-                                                    <div className="text-xs text-gray-500 truncate">{(f.inChargeOrg || '-') + (f.inChargeDept ? (' / ' + f.inChargeDept) : '')}</div>
+                                                    <div className="text-xs text-gray-500 truncate">{formatAffiliationLabel(f.inChargeOrg || f.inChargeOrgCode, f.inChargeDept || f.inChargeDeptCode)}</div>
                                                 </div>
                                                 <button onClick={() => openEditForm(f)} className="text-sm px-3 py-1 rounded border">編集</button>
                                             </div>
@@ -316,14 +356,14 @@ import { useEffect, useState } from 'react';
                                                 <label className="block text-xs text-gray-500 mb-1">担当局</label>
                                                 <select className="w-full border p-2 rounded" value={formDraft.inChargeOrg} onChange={e => setFormDraft(prev => ({ ...prev, inChargeOrg: e.target.value, inChargeDept: '' }))}>
                                                     <option value="">選択</option>
-                                                    {(formOptions && formOptions.orgs ? Array.from(new Set(formOptions.orgs)) : []).map((o2,idx)=>(<option key={idx} value={o2}>{o2}</option>))}
+                                                    {orgMasterList.map((o2,idx)=>(<option key={o2.pid || idx} value={o2.pid}>{o2.org}</option>))}
                                                 </select>
                                             </div>
                                             <div>
                                                 <label className="block text-xs text-gray-500 mb-1">担当部門</label>
-                                                <select className="w-full border p-2 rounded" value={formDraft.inChargeDept} onChange={e => setFormDraft(prev => ({ ...prev, inChargeDept: e.target.value }))} disabled={!(formOptions && formOptions.deptMaster && formDraft.inChargeOrg)}>
+                                                <select className="w-full border p-2 rounded" value={formDraft.inChargeDept} onChange={e => setFormDraft(prev => ({ ...prev, inChargeDept: e.target.value }))} disabled={!(deptMasterList.length && formDraft.inChargeOrg)}>
                                                     <option value="">選択</option>
-                                                    {(formOptions && formOptions.deptMaster ? Array.from(new Set(formOptions.deptMaster.filter(d=>d.org===formDraft.inChargeOrg).map(d=>d.dept))) : []).map((d2,idx)=>(<option key={idx} value={d2}>{d2}</option>))}
+                                                    {deptMasterList.filter(d => String(d.orgPid || '').trim() === String(formDraft.inChargeOrg || '').trim()).map((d2,idx)=>(<option key={d2.pid || idx} value={d2.pid}>{d2.dept}</option>))}
                                                 </select>
                                             </div>
                                         </div>
@@ -357,4 +397,3 @@ import { useEffect, useState } from 'react';
                 </div>
             );
         }
-

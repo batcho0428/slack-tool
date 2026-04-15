@@ -70,6 +70,16 @@ function _dispatchLegacyApiAction(action, args) {
       return inviteToChannel(args[0], args[1], args[2] || []);
     case 'createRosterCsv':
       return createRosterCsv(args[0], args[1] || {});
+    case 'updateUserProfile':
+      return updateUserProfile(args[0], args[1] || {}, args[2]);
+    case 'listAffiliationMasters':
+      return listAffiliationMasters(args[0]);
+    case 'saveOrgMaster':
+      return saveOrgMaster(args[0], args[1] || {});
+    case 'saveDeptMaster':
+      return saveDeptMaster(args[0], args[1] || {});
+    case 'saveRoleMaster':
+      return saveRoleMaster(args[0], args[1] || {});
     default:
       throw new Error('Unsupported action: ' + action);
   }
@@ -115,14 +125,12 @@ function _dispatchApiAction(action, payload) {
       return listSurveys(payload.sessionToken);
     case 'getSurveyDetails':
       return getSurveyDetails(payload.sessionToken, payload.spreadsheetRef, payload.rowIndex);
+    case 'listFormDefinitions':
+      return listFormDefinitions(payload.sessionToken);
+    case 'saveFormDefinition':
+      return saveFormDefinition(payload.sessionToken, payload.payload || {});
     case 'listCollections':
       return listCollections(payload.sessionToken);
-  // ダミー: listSurveys
-  function listSurveys(sessionToken) {
-    // 必要ならセッションチェックも可能
-    // ここでは空配列を返すだけ
-    return [];
-  }
     case 'createCollection':
       return createCollection(payload.sessionToken, payload.payload || {});
     case 'updateCollection':
@@ -153,6 +161,14 @@ function _dispatchApiAction(action, payload) {
       );
     case 'createRosterCsv':
       return createRosterCsv(payload.sessionToken, payload.params || {});
+    case 'listAffiliationMasters':
+      return listAffiliationMasters(payload.sessionToken);
+    case 'saveOrgMaster':
+      return saveOrgMaster(payload.sessionToken, payload.payload || {});
+    case 'saveDeptMaster':
+      return saveDeptMaster(payload.sessionToken, payload.payload || {});
+    case 'saveRoleMaster':
+      return saveRoleMaster(payload.sessionToken, payload.payload || {});
     default:
       throw new Error('Unsupported action: ' + action);
   }

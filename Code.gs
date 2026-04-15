@@ -7,7 +7,11 @@ const APP_HEADER_COLOR = '#1a237e'; // 紺色
 // SPREADSHEET_IDは関数実行時に取得（定数化によるタイミング問題を回避）
 const SHEET_USERS = 'Users';
 const SHEET_LOGS = 'Logs';
-const SHEET_OPTIONS = 'Options';
+const SHEET_GRADE = 'grade';
+const SHEET_ORG = 'org';
+const SHEET_DEPT = 'dept';
+const SHEET_ROLE = 'role';
+const SHEET_FIELD = 'field';
 const SHEET_FORMS = 'Forms';
 const SHEET_TOKENS = 'Tokens'; // 新規テーブル
 
@@ -28,8 +32,11 @@ const COL = {
   CONTINUE_NEXT: 10,
   ADMIN: 11,
   CAR_OWNER: 12,
+  AFFILIATION_START: 13,
   ORG_START: 13
 };
+
+const AFFILIATION_SLOTS = 10;
 
 // Tokensシートの列定義 (新規)
 const COL_TOKENS = {
@@ -42,17 +49,34 @@ const COL_TOKENS = {
 const HEADER_USERS = [
   '氏名', 'Name', '学籍番号', '学年', '分野', 'メールアドレス', '電話番号', '生年月日', '出身校',
   '退局', '次年度継続', 'Admin', '車所有',
-  '所属局1', '所属部門1', '役職1',
-  '所属局2', '所属部門2', '役職2',
-  '所属局3', '所属部門3', '役職3',
-  '所属局4', '所属部門4', '役職4',
-  '所属局5', '所属部門5', '役職5'
+  '所属部門1', '役職1',
+  '所属部門2', '役職2',
+  '所属部門3', '役職3',
+  '所属部門4', '役職4',
+  '所属部門5', '役職5',
+  '所属部門6', '役職6',
+  '所属部門7', '役職7',
+  '所属部門8', '役職8',
+  '所属部門9', '役職9',
+  '所属部門10', '役職10'
 ];
 
 const HEADER_TOKENS = ['Session ID', 'Email', 'Slack Token', 'Created At'];
-const HEADER_OPTIONS = ['学年リスト', '分野リスト', '役職リスト', '所属局リスト', '部門マスタ(局)', '部門マスタ(部門)'];
-const HEADER_FORMS = ['アンケートシート', 'フォームURL', 'フォームタイトル', '担当局', '担当部門', '収集中', 'スコアの名前', 'スコアの単位'];
+const HEADER_GRADE = ['pid', 'grade', 'count'];
+const HEADER_ORG = ['pid', 'org', 'gen', 'status', 'not_main_org'];
+const HEADER_DEPT = ['pid', 'dept', 'org', 'status', 'not_main_dept'];
+const HEADER_ROLE = ['pid', 'role', 'gen', 'not_main_role'];
+const HEADER_FIELD = ['pid', 'field'];
+const HEADER_FORMS = ['アンケートシート', 'フォームURL', 'フォームタイトル', '担当部門', '収集中', 'スコアの名称', 'スコアの単位'];
 const HEADER_LOGS = ['Time', 'Sender', 'Recipient', 'Status', 'Details'];
+
+function _affiliationDeptCol(slotIndex) {
+  return COL.AFFILIATION_START + slotIndex * 2;
+}
+
+function _affiliationRoleCol(slotIndex) {
+  return COL.AFFILIATION_START + slotIndex * 2 + 1;
+}
 
 function getScriptProperty(key) {
   return PropertiesService.getScriptProperties().getProperty(key);
@@ -150,20 +174,187 @@ function getSpreadsheetId() {
   return id;
 }
 
+function _loadMasterMaps(ss) {
+  const readMap = (sheetName, keyIndex, valueIndex, statusIndex, notMainIndex) => {
+    const out = { byPid: {}, byName: {}, rows: [], statusByPid: {}, notMainByPid: {} };
+    const sh = ss.getSheetByName(sheetName);
+    if (!sh || sh.getLastRow() < 2) return out;
+    const statusIdx = (typeof statusIndex === 'number') ? statusIndex : -1;
+    const notMainIdx = (typeof notMainIndex === 'number') ? notMainIndex : -1;
+    const maxIndex = Math.max(valueIndex, statusIdx, notMainIdx);
+    const rows = sh.getRange(2, 1, sh.getLastRow() - 1, Math.max(sh.getLastColumn(), maxIndex + 1)).getValues();
+    rows.forEach(r => {
+      const pid = String(r[keyIndex] || '').trim();
+      const name = String(r[valueIndex] || '').trim();
+      if (!pid || !name) return;
+      out.byPid[pid] = name;
+      out.byName[name] = pid;
+      out.statusByPid[pid] = statusIdx >= 0 ? String(r[statusIdx] || '').trim() : '';
+      out.notMainByPid[pid] = notMainIdx >= 0 ? (r[notMainIdx] === true || String(r[notMainIdx] || '').toLowerCase() === 'true') : false;
+      out.rows.push(r);
+    });
+    return out;
+  };
+
+  const grade = readMap(SHEET_GRADE, 0, 1, 2, 2);
+  const org = readMap(SHEET_ORG, 0, 1, 3, 4);
+  const dept = readMap(SHEET_DEPT, 0, 1, 3, 4);
+  const role = readMap(SHEET_ROLE, 0, 1, null, 3);
+  const field = readMap(SHEET_FIELD, 0, 1, 1, 1);
+
+  const deptToOrgPid = {};
+  const deptByOrgAndName = {}; // {orgPid: {deptName: deptPid}} to handle multi-org dept duplicates
+  dept.rows.forEach(r => {
+    const deptPid = String(r[0] || '').trim();
+    const orgPid = String(r[2] || '').trim();
+    if (deptPid && orgPid) {
+      deptToOrgPid[deptPid] = orgPid;
+      if (!deptByOrgAndName[orgPid]) deptByOrgAndName[orgPid] = {};
+      const deptName = String(r[1] || '').trim();
+      if (deptName) deptByOrgAndName[orgPid][deptName] = deptPid;
+    }
+  });
+  dept.deptByOrgAndName = deptByOrgAndName;
+
+  return { grade, org, dept, role, field, deptToOrgPid };
+}
+
+function _toPidOrEmpty(value, byName) {
+  const s = String(value || '').trim();
+  if (!s) return '';
+  if (byName && byName[s]) return byName[s];
+  return s;
+}
+
+function _toLabelOrEmpty(value, byPid) {
+  const s = String(value || '').trim();
+  if (!s) return '';
+  return byPid && byPid[s] ? byPid[s] : s;
+}
+
+function _isMasterActive(statusVal) {
+  const s = String(statusVal || '').trim();
+  return s === '' || s === '0' || s.toLowerCase() === 'false';
+}
+
+function _assertActiveSelection(label, pid, master, kind) {
+  const key = String(pid || '').trim();
+  if (!key) return;
+  if (!master || !master.byPid || !master.byPid[key]) {
+    throw new Error(label + 'が見つかりません');
+  }
+  if (!master.statusByPid || !_isMasterActive(master.statusByPid[key])) {
+    throw new Error('無効な' + kind + 'は選択できません');
+  }
+}
+
+function _buildAffiliationCode(orgLabel, deptLabel, masters) {
+  const orgPid = _toPidOrEmpty(orgLabel, masters && masters.org ? masters.org.byName : null);
+  const deptPid = _toPidOrEmpty(deptLabel, masters && masters.dept ? masters.dept.byName : null);
+  if (deptPid) return deptPid;
+  if (orgPid) return orgPid;
+  return '';
+}
+
+function _parseAffiliationCode(code, masters) {
+  const raw = String(code || '').trim();
+  if (!raw) return { code: '', orgPid: '', org: '', deptPid: '', dept: '' };
+
+  // dept code (4桁想定) が優先
+  if (masters && masters.dept && masters.dept.byPid && masters.dept.byPid[raw]) {
+    const deptPid = raw;
+    const orgPid = (masters.deptToOrgPid && masters.deptToOrgPid[deptPid]) ? masters.deptToOrgPid[deptPid] : '';
+    return {
+      code: raw,
+      orgPid: orgPid,
+      org: _toLabelOrEmpty(orgPid, masters.org.byPid),
+      deptPid: deptPid,
+      dept: _toLabelOrEmpty(deptPid, masters.dept.byPid)
+    };
+  }
+
+  if (masters && masters.dept && masters.dept.byName && masters.dept.byName[raw]) {
+    const deptPid = masters.dept.byName[raw];
+    const orgPid = (masters.deptToOrgPid && masters.deptToOrgPid[deptPid]) ? masters.deptToOrgPid[deptPid] : '';
+    return {
+      code: deptPid,
+      orgPid: orgPid,
+      org: _toLabelOrEmpty(orgPid, masters.org.byPid),
+      deptPid: deptPid,
+      dept: _toLabelOrEmpty(deptPid, masters.dept.byPid)
+    };
+  }
+
+  // org code (2桁想定)
+  if (masters && masters.org && masters.org.byPid && masters.org.byPid[raw]) {
+    return {
+      code: raw,
+      orgPid: raw,
+      org: _toLabelOrEmpty(raw, masters.org.byPid),
+      deptPid: '',
+      dept: ''
+    };
+  }
+
+  if (masters && masters.org && masters.org.byName && masters.org.byName[raw]) {
+    const orgPid = masters.org.byName[raw];
+    return {
+      code: orgPid,
+      orgPid: orgPid,
+      org: _toLabelOrEmpty(orgPid, masters.org.byPid),
+      deptPid: '',
+      dept: ''
+    };
+  }
+
+  // 既存データ互換: 不明値は文字列をそのままdept側に残す
+  return { code: raw, orgPid: '', org: '', deptPid: raw, dept: raw };
+}
+
+function _buildAffiliationStorageCode(orgValue, deptValue, masters) {
+  const orgPid = _toPidOrEmpty(orgValue, masters && masters.org ? masters.org.byName : null);
+  const deptPid = _toPidOrEmpty(deptValue, masters && masters.dept ? masters.dept.byName : null);
+  if (deptPid) return deptPid;
+  if (orgPid) return orgPid;
+  return '';
+}
+
 /* --------------------------------------------------------------------------
  * 0. 初期セットアップ (マイグレーション & トリガー設定)
  * -------------------------------------------------------------------------- */
 function setupSpreadsheet() {
   const ss = SpreadsheetApp.openById(getSpreadsheetId());
 
-  // 1. Optionsシート
-  let sheetOptions = ss.getSheetByName(SHEET_OPTIONS);
-  if (!sheetOptions) sheetOptions = ss.insertSheet(SHEET_OPTIONS);
-  if (sheetOptions.getLastRow() === 0) sheetOptions.getRange(1, 1, 1, HEADER_OPTIONS.length).setValues([HEADER_OPTIONS]);
+  const ensureSheetWithHeader = (name, header) => {
+    let sh = ss.getSheetByName(name);
+    if (!sh) sh = ss.insertSheet(name);
+    if (sh.getLastRow() === 0) sh.getRange(1, 1, 1, header.length).setValues([header]);
+    else sh.getRange(1, 1, 1, header.length).setValues([header]);
+    return sh;
+  };
+
+  const sheetGrade = ensureSheetWithHeader(SHEET_GRADE, HEADER_GRADE);
+  const sheetOrg = ensureSheetWithHeader(SHEET_ORG, HEADER_ORG);
+  const sheetDept = ensureSheetWithHeader(SHEET_DEPT, HEADER_DEPT);
+  const sheetRole = ensureSheetWithHeader(SHEET_ROLE, HEADER_ROLE);
+  const sheetField = ensureSheetWithHeader(SHEET_FIELD, HEADER_FIELD);
+
+  _applyCheckboxColumn(sheetOrg, 5);
+  _applyCheckboxColumn(sheetDept, 5);
+  _applyCheckboxColumn(sheetRole, 4);
 
   // 1b. Formsシート (アンケート情報を専用シートに移行)
   let sheetForms = ss.getSheetByName(SHEET_FORMS);
   if (!sheetForms) sheetForms = ss.insertSheet(SHEET_FORMS);
+  // Remove legacy '担当局' column in Forms if present
+  try {
+    const hdrCols = Math.max(1, sheetForms.getLastColumn());
+    const hdrRow = sheetForms.getRange(1, 1, 1, hdrCols).getValues()[0] || [];
+    const bureauIdx = hdrRow.findIndex(h => String(h || '').trim() === '担当局');
+    if (bureauIdx >= 0) {
+      sheetForms.deleteColumn(bureauIdx + 1);
+    }
+  } catch (e) {}
   // Ensure header row contains our expected HEADER_FORMS columns. Preserve existing non-empty headers when possible.
   try {
     const existingCols = Math.max(1, sheetForms.getLastColumn());
@@ -212,34 +403,6 @@ function setupSpreadsheet() {
     try { sheetForms.getRange(1, 1, 1, HEADER_FORMS.length).setValues([HEADER_FORMS]); } catch (ee) {}
   }
 
-  // migrate existing Options G:I -> Forms if present (pad to new column count)
-  try {
-    const lastOptRow = sheetOptions.getLastRow();
-    if (lastOptRow >= 2) {
-      const surveyRows = sheetOptions.getRange(2, 7, Math.max(0, lastOptRow - 1), 3).getValues();
-      const exist = {};
-      const lastFormRow = sheetForms.getLastRow();
-      if (lastFormRow >= 2) {
-        const cur = sheetForms.getRange(2,1,Math.max(0,lastFormRow-1),1).getValues().map(r=>String(r[0]||''));
-        cur.forEach(v=>{ if (v) exist[v.trim()] = true; });
-      }
-      const toAppend = [];
-      const padLen = HEADER_FORMS.length;
-      surveyRows.forEach(r => {
-        const sName = String(r[0] || '').trim();
-        const url = String(r[1] || '').trim();
-        const title = String(r[2] || '').trim();
-        if (sName && !exist[sName]) {
-          const row = new Array(padLen).fill('');
-          row[0] = sName; row[1] = url; row[2] = title;
-          toAppend.push(row);
-          exist[sName]=true;
-        }
-      });
-      if (toAppend.length>0) sheetForms.getRange(sheetForms.getLastRow()+1, 1, toAppend.length, padLen).setValues(toAppend);
-    }
-  } catch (e) { /* ignore migration errors */ }
-
   // 2. Usersシート
   let sheetUsers = ss.getSheetByName(SHEET_USERS);
   if (!sheetUsers) sheetUsers = ss.insertSheet(SHEET_USERS);
@@ -267,6 +430,17 @@ function setupSpreadsheet() {
   // 4. Collections 系シート（集金）
   try { ensureCollectionsSheets(); } catch (e) { /* ignore if cannot create */ }
 
+  // Remove legacy '担当局' column in Collections if present
+  try {
+    const sheetCollections = ss.getSheetByName(SHEET_COLLECTIONS);
+    if (sheetCollections) {
+      const hdrColsC = Math.max(1, sheetCollections.getLastColumn());
+      const hdrRowC = sheetCollections.getRange(1, 1, 1, hdrColsC).getValues()[0] || [];
+      const bureauIdxC = hdrRowC.findIndex(h => String(h || '').trim() === '担当局');
+      if (bureauIdxC >= 0) sheetCollections.deleteColumn(bureauIdxC + 1);
+    }
+  } catch (e) {}
+
   // Tokens は PropertiesService に移行したためシートは作成しない
 
   // --- A. 書式設定 ---
@@ -276,28 +450,25 @@ function setupSpreadsheet() {
   sheetUsers.getRange(startRow, 8, numRows, 1).setNumberFormat('yyyy/mm/dd');
 
   // --- B. 入力規則 ---
-  const rangeGradeOpt = sheetOptions.getRange('A2:A');
-  const rangeFieldOpt = sheetOptions.getRange('B2:B');
-  const rangeRoleOpt  = sheetOptions.getRange('C2:C');
-  const rangeOrgOpt   = sheetOptions.getRange('D2:D');
-  const rangeDeptOpt  = sheetOptions.getRange('F2:F');
+  const rangeGradeOpt = sheetGrade.getRange('A2:A');
+  const rangeFieldOpt = sheetField.getRange('A2:A');
+  const rangeRoleOpt  = sheetRole.getRange('A2:A');
+  const rangeDeptOpt  = sheetDept.getRange('A2:A');
 
   const buildRule = (range) => SpreadsheetApp.newDataValidation().requireValueInRange(range).setAllowInvalid(true).build();
   const ruleGrade = buildRule(rangeGradeOpt);
   const ruleField = buildRule(rangeFieldOpt);
   const ruleRole  = buildRule(rangeRoleOpt);
-  const ruleOrg   = buildRule(rangeOrgOpt);
   const ruleDept  = buildRule(rangeDeptOpt);
 
-  sheetOptions.getRange('E2:E').setDataValidation(ruleOrg);
   sheetUsers.getRange(startRow, 4, numRows, 1).setDataValidation(ruleGrade);
   sheetUsers.getRange(startRow, 5, numRows, 1).setDataValidation(ruleField);
 
-  for (let k = 0; k < 5; k++) {
-    const baseCol = COL.ORG_START + 1 + (k * 3); // 1-based
-    sheetUsers.getRange(startRow, baseCol, numRows, 1).setDataValidation(ruleOrg);
-    sheetUsers.getRange(startRow, baseCol + 1, numRows, 1).setDataValidation(ruleDept);
-    sheetUsers.getRange(startRow, baseCol + 2, numRows, 1).setDataValidation(ruleRole);
+  for (let k = 0; k < AFFILIATION_SLOTS; k++) {
+    const deptCol = _affiliationDeptCol(k) + 1;
+    const roleCol = _affiliationRoleCol(k) + 1;
+    sheetUsers.getRange(startRow, deptCol, numRows, 1).setDataValidation(ruleDept);
+    sheetUsers.getRange(startRow, roleCol, numRows, 1).setDataValidation(ruleRole);
   }
 
   // 車所有 (Y列) と Admin列をチェックボックスに変更（フォールバックあり）
@@ -335,13 +506,11 @@ function setupSpreadsheet() {
   const formulaStudentId = `=AND(${colStudentIdLet}2<>"", NOT(REGEXMATCH(TO_TEXT(${colStudentIdLet}2), "^[0-9]{8}$")))`;
   rules.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(formulaStudentId).setBackground("#FFFF00").setRanges([rangeStudentId]).build());
 
-  for (let k = 0; k < 5; k++) {
-    const colOrgIndex = COL.ORG_START + (k * 3) + 1; // 1-based: 所属局のカラムインデックス
-    const colDeptIndex = COL.ORG_START + (k * 3) + 2; // 1-based: 所属部門のカラムインデックス
-    const colOrgLet = getColLetter(colOrgIndex);
+  for (let k = 0; k < AFFILIATION_SLOTS; k++) {
+    const colDeptIndex = _affiliationDeptCol(k) + 1;
     const colDeptLet = getColLetter(colDeptIndex);
     const range = sheetUsers.getRange(`${colDeptLet}2:${colDeptLet}`);
-    const formula = `=AND(${colDeptLet}2<>"", COUNTIFS(INDIRECT("${SHEET_OPTIONS}!\\$E:\\$E"), ${colOrgLet}2, INDIRECT("${SHEET_OPTIONS}!\\$F:\\$F"), ${colDeptLet}2)=0)`;
+    const formula = `=AND(${colDeptLet}2<>"", COUNTIF(INDIRECT("${SHEET_DEPT}!\\$A:\\$A"), ${colDeptLet}2)=0, COUNTIF(INDIRECT("${SHEET_ORG}!\\$A:\\$A"), ${colDeptLet}2)=0)`;
     rules.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(formula).setBackground("#FFFF00").setRanges([range]).build());
   }
   sheetUsers.setConditionalFormatRules(rules);
@@ -452,6 +621,7 @@ function getLoginUser(sessionToken) {
     if (!sessionToken) return { status: 'guest' };
 
     const ss = SpreadsheetApp.openById(getSpreadsheetId());
+    const masters = _loadMasterMaps(ss);
     const usersSheet = ss.getSheetByName(SHEET_USERS);
     if (!usersSheet) return { status: 'error', message: "DB構成エラー" };
 
@@ -501,6 +671,220 @@ function _requireAdmin(sessionToken) {
   const isAdmin = row && (row[COL.ADMIN] === 'TRUE' || row[COL.ADMIN] === true);
   if (!isAdmin) throw new Error('管理者権限が必要です');
   return login;
+}
+
+function _nextNumericPid(existingPids, width) {
+  let max = 0;
+  existingPids.forEach(p => {
+    const n = parseInt(String(p || '').replace(/[^0-9]/g, ''), 10);
+    if (!isNaN(n) && n > max) max = n;
+  });
+  const next = max + 1;
+  return Utilities.formatString('%0' + width + 'd', next);
+}
+
+function _nextDataRowByPidColumn(sheet) {
+  const lastRow = Math.max(sheet.getLastRow(), 1);
+  if (lastRow < 2) return 2;
+  const values = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  let lastDataRow = 1;
+  for (let i = 0; i < values.length; i++) {
+    if (String(values[i][0] || '').trim()) lastDataRow = i + 2;
+  }
+  return lastDataRow + 1;
+}
+
+function _applyCheckboxColumn(sheet, colIndex1Based) {
+  const lastRow = Math.max(sheet.getLastRow(), 2);
+  const numRows = Math.max(1, lastRow - 1);
+  const range = sheet.getRange(2, colIndex1Based, numRows, 1);
+  try {
+    const values = range.getValues();
+    const normalized = values.map(row => {
+      const value = row[0];
+      if (value === true || value === 'TRUE' || String(value).toLowerCase() === 'true') return [true];
+      if (value === false || value === 'FALSE' || String(value).toLowerCase() === 'false') return [false];
+      return [false];
+    });
+    range.setValues(normalized);
+  } catch (e) {}
+  try {
+    range.insertCheckboxes();
+  } catch (e) {
+    try {
+      const rule = SpreadsheetApp.newDataValidation().requireValueInList(['TRUE', 'FALSE']).setAllowInvalid(true).build();
+      range.setDataValidation(rule);
+    } catch (ee) {}
+  }
+}
+
+function listAffiliationMasters(sessionToken) {
+  _requireAdmin(sessionToken);
+  const ss = SpreadsheetApp.openById(getSpreadsheetId());
+  const masters = _loadMasterMaps(ss);
+  const isActive = (statusVal) => {
+    const s = String(statusVal || '').trim();
+    return s === '' || s === '0' || s.toLowerCase() === 'false';
+  };
+
+  const orgs = Object.keys(masters.org.byPid).map(pid => ({
+    pid: pid,
+    org: masters.org.byPid[pid],
+    status: String(masters.org.statusByPid[pid] || ''),
+    not_main_org: !!masters.org.notMainByPid[pid],
+    gen: (() => {
+      const row = masters.org.rows.find(r => String(r[0] || '').trim() === pid);
+      return row ? row[2] : '';
+    })(),
+    active: isActive(masters.org.statusByPid[pid])
+  })).sort((a, b) => a.pid.localeCompare(b.pid));
+
+  const depts = Object.keys(masters.dept.byPid).map(pid => {
+    const orgPid = masters.deptToOrgPid[pid] || '';
+    return {
+      pid: pid,
+      dept: masters.dept.byPid[pid],
+      orgPid: orgPid,
+      org: _toLabelOrEmpty(orgPid, masters.org.byPid),
+      status: String(masters.dept.statusByPid[pid] || ''),
+      not_main_dept: !!masters.dept.notMainByPid[pid],
+      active: isActive(masters.dept.statusByPid[pid])
+    };
+  }).sort((a, b) => a.pid.localeCompare(b.pid));
+
+  const roles = Object.keys(masters.role.byPid).map(pid => ({
+    pid: pid,
+    role: masters.role.byPid[pid],
+    gen: (() => {
+      const row = masters.role.rows.find(r => String(r[0] || '').trim() === pid);
+      return row ? row[2] : '';
+    })(),
+    status: String(masters.role.statusByPid[pid] || ''),
+    not_main_role: !!masters.role.notMainByPid[pid],
+    active: isActive(masters.role.statusByPid[pid])
+  })).sort((a, b) => a.pid.localeCompare(b.pid));
+
+  return { orgs: orgs, depts: depts, roles: roles };
+}
+
+function saveOrgMaster(sessionToken, payload) {
+  _requireAdmin(sessionToken);
+  const ss = SpreadsheetApp.openById(getSpreadsheetId());
+  const sh = ss.getSheetByName(SHEET_ORG);
+  if (!sh) throw new Error('org シートが見つかりません');
+  const data = sh.getDataRange().getValues();
+  const pidIn = String((payload && payload.pid) || '').trim();
+  const orgName = String((payload && payload.org) || '').trim();
+  if (!orgName) throw new Error('局名は必須です');
+  const genRaw = (payload && typeof payload.gen !== 'undefined') ? String(payload.gen).trim() : '';
+  const gen = genRaw === '' ? '' : Number(genRaw);
+  const status = String((payload && payload.status) || '').trim();
+  const notMain = !!(payload && payload.not_main_org);
+
+  // If not_main_org is true, gen is required
+  if (notMain && (genRaw === '' || isNaN(gen))) {
+    throw new Error('not_main_org が True の場合、gen は必須です');
+  }
+
+  if (pidIn) {
+    for (let i = 1; i < data.length; i++) {
+      if (String(data[i][0] || '').trim() === pidIn) {
+        sh.getRange(i + 1, 1, 1, 5).setValues([[pidIn, orgName, gen, status, notMain]]);
+        _applyCheckboxColumn(sh, 5);
+        return { success: true, pid: pidIn };
+      }
+    }
+  }
+
+  let nextPid = '';
+  if (notMain) {
+    // gen is required and provides first two digits; append single-digit sequence
+    const genStr = Utilities.formatString('%02d', gen);
+    const siblings = data.slice(1).map(r => String(r[0] || '').trim()).filter(pid => pid.startsWith(genStr) && pid.length === 3);
+    const seqs = siblings.map(pid => parseInt(pid.slice(2), 10)).filter(n => !isNaN(n));
+    const maxSeq = seqs.length ? Math.max.apply(null, seqs) : 0;
+    const nextSeq = maxSeq + 1;
+    nextPid = genStr + String(nextSeq);
+  } else {
+    nextPid = _nextNumericPid(data.slice(1).map(r => r[0]), 2);
+  }
+  const nextRow = _nextDataRowByPidColumn(sh);
+  sh.getRange(nextRow, 1, 1, 5).setValues([[nextPid, orgName, (notMain ? gen : ''), status, notMain]]);
+  _applyCheckboxColumn(sh, 5);
+  return { success: true, pid: nextPid };
+}
+
+function saveDeptMaster(sessionToken, payload) {
+  _requireAdmin(sessionToken);
+  const ss = SpreadsheetApp.openById(getSpreadsheetId());
+  const sh = ss.getSheetByName(SHEET_DEPT);
+  if (!sh) throw new Error('dept シートが見つかりません');
+  const masters = _loadMasterMaps(ss);
+  const data = sh.getDataRange().getValues();
+  const pidIn = String((payload && payload.pid) || '').trim();
+  const deptName = String((payload && payload.dept) || '').trim();
+  const orgInput = String((payload && payload.orgPid) || '').trim();
+  let orgPid = '';
+  if (orgInput) {
+    if (masters.org.byPid && masters.org.byPid[orgInput]) orgPid = orgInput;
+    else if (masters.org.byName && masters.org.byName[orgInput]) orgPid = masters.org.byName[orgInput];
+    else orgPid = orgInput;
+  }
+  if (!deptName) throw new Error('部門名は必須です');
+  if (!orgPid) throw new Error('所属局は必須です');
+  const status = String((payload && payload.status) || '').trim();
+  const notMain = !!(payload && payload.not_main_dept);
+
+  _assertActiveSelection('所属局', orgPid, masters.org, '所属局');
+
+  if (pidIn) {
+    for (let i = 1; i < data.length; i++) {
+      if (String(data[i][0] || '').trim() === pidIn) {
+        sh.getRange(i + 1, 1, 1, 5).setValues([[pidIn, deptName, orgPid, status, notMain]]);
+        _applyCheckboxColumn(sh, 5);
+        return { success: true, pid: pidIn };
+      }
+    }
+  }
+
+  const siblings = data.slice(1).map(r => String(r[0] || '').trim()).filter(pid => pid.startsWith(orgPid) && pid.length >= 4);
+  const seq = siblings.map(pid => parseInt(pid.slice(-2), 10)).filter(n => !isNaN(n));
+  const maxSeq = seq.length ? Math.max.apply(null, seq) : 0;
+  const nextPid = orgPid + Utilities.formatString('%02d', maxSeq + 1);
+  const nextRow = _nextDataRowByPidColumn(sh);
+  sh.getRange(nextRow, 1, 1, 5).setValues([[nextPid, deptName, orgPid, status, notMain]]);
+  _applyCheckboxColumn(sh, 5);
+  return { success: true, pid: nextPid };
+}
+
+function saveRoleMaster(sessionToken, payload) {
+  _requireAdmin(sessionToken);
+  const ss = SpreadsheetApp.openById(getSpreadsheetId());
+  const sh = ss.getSheetByName(SHEET_ROLE);
+  if (!sh) throw new Error('role シートが見つかりません');
+  const data = sh.getDataRange().getValues();
+  const pidIn = String((payload && payload.pid) || '').trim();
+  const roleName = String((payload && payload.role) || '').trim();
+  if (!roleName) throw new Error('役職名は必須です');
+  const genRaw = (payload && typeof payload.gen !== 'undefined') ? String(payload.gen).trim() : '';
+  const gen = genRaw === '' ? '' : Number(genRaw);
+  const notMain = !!(payload && payload.not_main_role);
+
+  if (pidIn) {
+    for (let i = 1; i < data.length; i++) {
+      if (String(data[i][0] || '').trim() === pidIn) {
+        sh.getRange(i + 1, 1, 1, 4).setValues([[pidIn, roleName, gen, notMain]]);
+        _applyCheckboxColumn(sh, 4);
+        return { success: true, pid: pidIn };
+      }
+    }
+  }
+
+  const nextPid = _nextNumericPid(data.slice(1).map(r => r[0]), 2);
+  const nextRow = _nextDataRowByPidColumn(sh);
+  sh.getRange(nextRow, 1, 1, 4).setValues([[nextPid, roleName, gen, notMain]]);
+  _applyCheckboxColumn(sh, 4);
+  return { success: true, pid: nextPid };
 }
 
 // 1-A. OTPリクエスト (BotからDM送信)
@@ -731,6 +1115,7 @@ function getUserProfile(sessionToken, targetEmail) {
   if (login.status !== 'authorized') throw new Error("認証されていません");
 
   const ss = SpreadsheetApp.openById(getSpreadsheetId());
+  const masters = _loadMasterMaps(ss);
   const sheet = ss.getSheetByName(SHEET_USERS);
   const data = sheet.getDataRange().getValues();
 
@@ -745,26 +1130,29 @@ function getUserProfile(sessionToken, targetEmail) {
   const birthdayVal = row[COL.BIRTHDAY] instanceof Date ? Utilities.formatDate(row[COL.BIRTHDAY], Session.getScriptTimeZone(), 'yyyy-MM-dd') : (row[COL.BIRTHDAY] || '');
   const viewedIsAdmin = row[COL.ADMIN] === 'TRUE' || row[COL.ADMIN] === true;
 
+  const affiliations = [];
+  for (let k = 0; k < AFFILIATION_SLOTS; k++) {
+    const affiliationCode = String(row[_affiliationDeptCol(k)] || '').trim();
+    const aff = _parseAffiliationCode(affiliationCode, masters);
+    const rolePid = String(row[_affiliationRoleCol(k)] || '').trim();
+    const role = _toLabelOrEmpty(rolePid, masters.role.byPid);
+    affiliations.push({ org: aff.org, dept: aff.dept, role: role, affiliationCode: aff.code });
+  }
+
   return {
     name: row[COL.NAME_JP],
     nameEn: row[COL.NAME_EN],
     email: row[COL.EMAIL],
     studentId: row[COL.STUDENT_ID],
-    grade: row[COL.GRADE],
-    field: row[COL.FIELD],
+    grade: _toLabelOrEmpty(row[COL.GRADE], masters.grade.byPid),
+    field: _toLabelOrEmpty(row[COL.FIELD], masters.field.byPid),
     phone: row[COL.PHONE],
     birthday: birthdayVal,
     almaMater: row[COL.ALMA_MATER],
     carOwner: row[COL.CAR_OWNER] === 'TRUE' || row[COL.CAR_OWNER] === true,
     retired: row[COL.RETIRED] === 'TRUE' || row[COL.RETIRED] === true,
     continueNext: row[COL.CONTINUE_NEXT] === 'TRUE' || row[COL.CONTINUE_NEXT] === true,
-    orgs: [
-      { org: row[COL.ORG_START], dept: row[COL.ORG_START+1], role: row[COL.ORG_START+2] },
-      { org: row[COL.ORG_START+3], dept: row[COL.ORG_START+4], role: row[COL.ORG_START+5] },
-      { org: row[COL.ORG_START+6], dept: row[COL.ORG_START+7], role: row[COL.ORG_START+8] },
-      { org: row[COL.ORG_START+9], dept: row[COL.ORG_START+10], role: row[COL.ORG_START+11] },
-      { org: row[COL.ORG_START+12], dept: row[COL.ORG_START+13], role: row[COL.ORG_START+14] }
-    ],
+    orgs: affiliations,
     canEditNameEmail: isAdmin,
     isAdmin: viewedIsAdmin
   };
@@ -775,6 +1163,7 @@ function updateUserProfile(sessionToken, formData, targetEmail) {
   if (login.status !== 'authorized') throw new Error("認証されていません");
 
   const ss = SpreadsheetApp.openById(getSpreadsheetId());
+  const masters = _loadMasterMaps(ss);
   const sheet = ss.getSheetByName(SHEET_USERS);
   const data = sheet.getDataRange().getValues();
 
@@ -803,8 +1192,8 @@ function updateUserProfile(sessionToken, formData, targetEmail) {
   sheet.getRange(rowIndex, COL.NAME_EN + 1).setValue(normalizeSpace(formData.nameEn || ''));
 
   sheet.getRange(rowIndex, COL.STUDENT_ID + 1).setValue(formData.studentId || '');
-  sheet.getRange(rowIndex, COL.GRADE + 1).setValue(formData.grade || '');
-  sheet.getRange(rowIndex, COL.FIELD + 1).setValue(formData.field || '');
+  sheet.getRange(rowIndex, COL.GRADE + 1).setValue(_toPidOrEmpty(formData.grade, masters.grade.byName));
+  sheet.getRange(rowIndex, COL.FIELD + 1).setValue(_toPidOrEmpty(formData.field, masters.field.byName));
   // 電話番号は先頭0を保持するため、セルを文字列書式にしてから明示的に文字列で保存する
   try {
     const phoneRange = sheet.getRange(rowIndex, COL.PHONE + 1);
@@ -855,17 +1244,23 @@ function updateUserProfile(sessionToken, formData, targetEmail) {
     sheet.getRange(rowIndex, COL.CONTINUE_NEXT + 1).setValue(requested ? true : false);
   }
 
-  // 所属情報 (5セット)
+  // 所属情報 (10セット)
   if (formData.orgs && Array.isArray(formData.orgs)) {
-    for (let k = 0; k < 5; k++) {
+    for (let k = 0; k < AFFILIATION_SLOTS; k++) {
       if (k < formData.orgs.length) {
-        // 所属局1 (k===0) の編集は管理者のみ許可
-        if (k === 0 && !isAdmin) continue;
         const o = formData.orgs[k];
-        const baseCol = COL.ORG_START + (k * 3) + 1;
-        sheet.getRange(rowIndex, baseCol).setValue(o.org || "");
-        sheet.getRange(rowIndex, baseCol + 1).setValue(o.dept || "");
-        sheet.getRange(rowIndex, baseCol + 2).setValue(o.role || "");
+        const orgPid = _toPidOrEmpty(o.org, masters.org.byName);
+        const deptPid = _toPidOrEmpty(o.dept, masters.dept.byName);
+        const rolePid = _toPidOrEmpty(o.role, masters.role.byName);
+        if (orgPid) _assertActiveSelection('所属局', orgPid, masters.org, '所属局');
+        if (deptPid) _assertActiveSelection('所属部門', deptPid, masters.dept, '所属部門');
+        if (rolePid) _assertActiveSelection('役職', rolePid, masters.role, '所属役職');
+        const affCode = _buildAffiliationCode(o.org, o.dept, masters);
+        sheet.getRange(rowIndex, _affiliationDeptCol(k) + 1).setValue(affCode);
+        sheet.getRange(rowIndex, _affiliationRoleCol(k) + 1).setValue(rolePid);
+      } else {
+        sheet.getRange(rowIndex, _affiliationDeptCol(k) + 1).setValue('');
+        sheet.getRange(rowIndex, _affiliationRoleCol(k) + 1).setValue('');
       }
     }
   }
@@ -927,13 +1322,15 @@ function createUser(sessionToken, userObj) {
     }
   }
 
+  const masters = _loadMasterMaps(ss);
+
   // 行データ作成
   const row = new Array(HEADER_USERS.length).fill('');
   row[COL.NAME_JP] = name;
   row[COL.NAME_EN] = userObj.nameEn || '';
   row[COL.STUDENT_ID] = userObj.studentId || '';
-  row[COL.GRADE] = userObj.grade || '';
-  row[COL.FIELD] = userObj.field || '';
+  row[COL.GRADE] = _toPidOrEmpty(userObj.grade, masters.grade.byName);
+  row[COL.FIELD] = _toPidOrEmpty(userObj.field, masters.field.byName);
   row[COL.EMAIL] = email;
   row[COL.PHONE] = userObj.phone || '';
   if (userObj.birthday) {
@@ -946,15 +1343,19 @@ function createUser(sessionToken, userObj) {
   row[COL.RETIRED] = (typeof userObj.retired !== 'undefined') ? !!userObj.retired : false;
   row[COL.CONTINUE_NEXT] = (typeof userObj.continueNext !== 'undefined') ? !!userObj.continueNext : false;
 
-  // 所属 (5セット)
+  // 所属 (10セット)
   if (userObj.orgs && Array.isArray(userObj.orgs)) {
-    for (let k = 0; k < 5; k++) {
-      const base = COL.ORG_START + (k * 3);
+    for (let k = 0; k < AFFILIATION_SLOTS; k++) {
       if (k < userObj.orgs.length) {
         const o = userObj.orgs[k] || {};
-        row[base] = o.org || '';
-        row[base + 1] = o.dept || '';
-        row[base + 2] = o.role || '';
+        const orgPid = _toPidOrEmpty(o.org, masters.org.byName);
+        const deptPid = _toPidOrEmpty(o.dept, masters.dept.byName);
+        const rolePid = _toPidOrEmpty(o.role, masters.role.byName);
+        if (orgPid) _assertActiveSelection('所属局', orgPid, masters.org, '所属局');
+        if (deptPid) _assertActiveSelection('所属部門', deptPid, masters.dept, '所属部門');
+        if (rolePid) _assertActiveSelection('役職', rolePid, masters.role, '所属役職');
+        row[_affiliationDeptCol(k)] = _buildAffiliationCode(o.org, o.dept, masters);
+        row[_affiliationRoleCol(k)] = rolePid;
       }
     }
   }
@@ -1081,48 +1482,75 @@ function inviteToChannel(sessionToken, channelId, recipients) {
  * -------------------------------------------------------------------------- */
 function getSearchOptions() {
   const ss = SpreadsheetApp.openById(getSpreadsheetId());
-  const optSheet = ss.getSheetByName(SHEET_OPTIONS);
-  const options = { grades: [], fields: [], roles: [], orgs: [], deptMaster: [] };
+  const options = { grades: [], fields: [], roles: [], orgs: [], deptMaster: [], orgMaster: [], roleMaster: [] };
+  const masters = _loadMasterMaps(ss);
 
-  // Primary source: Options sheet
-  if (optSheet) {
-    const data = optSheet.getDataRange().getValues();
-    for (let i = 1; i < data.length; i++) {
-      if (data[i][0]) options.grades.push(String(data[i][0]).trim());
-      if (data[i][1]) options.fields.push(String(data[i][1]).trim());
-      if (data[i][2]) options.roles.push(String(data[i][2]).trim());
-      if (data[i][3]) options.orgs.push(String(data[i][3]).trim());
-      if (data[i][4] && data[i][5]) {
-        options.deptMaster.push({ org: String(data[i][4]).trim(), dept: String(data[i][5]).trim() });
-      }
+  const sortByPid = (a, b) => {
+    const sa = String(a || '').trim();
+    const sb = String(b || '').trim();
+    const na = /^\d+$/.test(sa) ? parseInt(sa, 10) : null;
+    const nb = /^\d+$/.test(sb) ? parseInt(sb, 10) : null;
+    if (na !== null && nb !== null) {
+      if (na !== nb) return na - nb;
+      if (sa.length !== sb.length) return sa.length - sb.length;
+      return sa.localeCompare(sb);
     }
-  }
+    if (na !== null && nb === null) return -1;
+    if (na === null && nb !== null) return 1;
+    return sa.localeCompare(sb);
+  };
+  const sortByNotMainThenPid = (a, b) => {
+    const an = !!a.notMain;
+    const bn = !!b.notMain;
+    if (an !== bn) return an ? 1 : -1; // FALSE -> TRUE
+    return sortByPid(a.pid, b.pid);
+  };
 
-  // Fallback source: derive from Users sheet so dropdowns never become empty.
-  const usersSheet = ss.getSheetByName(SHEET_USERS);
-  if (usersSheet) {
-    const rows = usersSheet.getDataRange().getValues();
-    for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
-      const grade = String(row[COL.GRADE] || '').trim();
-      const field = String(row[COL.FIELD] || '').trim();
-      if (grade) options.grades.push(grade);
-      if (field) options.fields.push(field);
+  const gradePidList = Object.keys(masters.grade.byPid).sort(sortByPid);
+  const fieldPidList = Object.keys(masters.field.byPid).sort(sortByPid);
+  options.grades = gradePidList.map(pid => masters.grade.byPid[pid]);
+  options.fields = fieldPidList.map(pid => masters.field.byPid[pid]);
+  const isActive = (statusVal) => {
+    const s = String(statusVal || '').trim();
+    return s === '' || s === '0' || s.toLowerCase() === 'false';
+  };
 
-      for (let k = 0; k < 5; k++) {
-        const base = COL.ORG_START + (k * 3);
-        const org = String(row[base] || '').trim();
-        const dept = String(row[base + 1] || '').trim();
-        const role = String(row[base + 2] || '').trim();
-        if (org) options.orgs.push(org);
-        if (role) options.roles.push(role);
-        if (org && dept) options.deptMaster.push({ org: org, dept: dept });
-      }
-    }
-  }
+  const orgMasterSorted = Object.keys(masters.org.byPid)
+    .filter(pid => isActive(masters.org.statusByPid[pid]))
+    .map(pid => ({ pid: pid, org: masters.org.byPid[pid], notMain: !!masters.org.notMainByPid[pid] }))
+    .sort(sortByNotMainThenPid);
 
-  const uniqueSorted = function(arr) {
-    return Array.from(new Set(arr.map(v => String(v || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'ja'));
+  const roleMasterSorted = Object.keys(masters.role.byPid)
+    .filter(pid => isActive(masters.role.statusByPid[pid]))
+    .map(pid => ({ pid: pid, role: masters.role.byPid[pid], notMain: !!masters.role.notMainByPid[pid] }))
+    .sort(sortByNotMainThenPid);
+
+  const deptMasterSorted = Object.keys(masters.dept.byPid)
+    .filter(pid => isActive(masters.dept.statusByPid[pid]))
+    .map(deptPid => {
+      const orgPid = masters.deptToOrgPid[deptPid] || '';
+      const orgName = masters.org.byPid[orgPid] || orgPid;
+      return { org: orgName, dept: masters.dept.byPid[deptPid], pid: deptPid, orgPid: orgPid, notMain: !!masters.dept.notMainByPid[deptPid] };
+    })
+    .sort(sortByNotMainThenPid);
+
+  options.orgMaster = orgMasterSorted;
+  options.roleMaster = roleMasterSorted;
+  options.deptMaster = deptMasterSorted;
+
+  options.orgs = orgMasterSorted.map(v => v.org);
+  options.roles = roleMasterSorted.map(v => v.role);
+
+  const uniqueInOrder = function(arr) {
+    const seen = {};
+    const out = [];
+    arr.forEach(v => {
+      const s = String(v || '').trim();
+      if (!s || seen[s]) return;
+      seen[s] = true;
+      out.push(s);
+    });
+    return out;
   };
   const seenDept = {};
   const dedupDeptMaster = [];
@@ -1133,18 +1561,14 @@ function getSearchOptions() {
     const key = org + '||' + dept;
     if (seenDept[key]) continue;
     seenDept[key] = true;
-    dedupDeptMaster.push({ org: org, dept: dept });
+    dedupDeptMaster.push(options.deptMaster[i]);
   }
 
-  options.grades = uniqueSorted(options.grades);
-  options.fields = uniqueSorted(options.fields);
-  options.roles = uniqueSorted(options.roles);
-  options.orgs = uniqueSorted(options.orgs);
-  options.deptMaster = dedupDeptMaster.sort((a, b) => {
-    const orgCmp = a.org.localeCompare(b.org, 'ja');
-    if (orgCmp !== 0) return orgCmp;
-    return a.dept.localeCompare(b.dept, 'ja');
-  });
+  options.grades = uniqueInOrder(options.grades);
+  options.fields = uniqueInOrder(options.fields);
+  options.roles = uniqueInOrder(options.roles);
+  options.orgs = uniqueInOrder(options.orgs);
+  options.deptMaster = dedupDeptMaster;
 
   Logger.log('getSearchOptions result: ' + JSON.stringify(options));
   return options;
@@ -1154,6 +1578,7 @@ function searchRecipients(criteria) {
   const ss = SpreadsheetApp.openById(getSpreadsheetId());
   const sheet = ss.getSheetByName(SHEET_USERS);
   const data = sheet.getDataRange().getValues();
+  const masters = _loadMasterMaps(ss);
   const results = [];
   const normalize = function(value) {
     return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
@@ -1172,8 +1597,8 @@ function searchRecipients(criteria) {
     const nameJp = String(row[COL.NAME_JP] || '').trim();
     const nameEn = String(row[COL.NAME_EN] || '').trim();
     const studentId = row[COL.STUDENT_ID] || "";
-    const grade = row[COL.GRADE];
-    const field = row[COL.FIELD];
+    const grade = _toLabelOrEmpty(row[COL.GRADE], masters.grade.byPid);
+    const field = _toLabelOrEmpty(row[COL.FIELD], masters.field.byPid);
     const email = String(row[COL.EMAIL] || '').trim();
     const almaMater = row[COL.ALMA_MATER] || "";
     const retired = row[COL.RETIRED] === true || row[COL.RETIRED] === 'TRUE';
@@ -1195,19 +1620,35 @@ function searchRecipients(criteria) {
 
     const depts = [];
     const affiliationTokens = [];
-    for (let k = 0; k < 5; k++) {
-      const start = COL.ORG_START + (k * 3);
-      if (start + 2 >= row.length) break;
-      const org = normalize(row[start]);
-      const dept = normalize(row[start + 1]);
-      const role = normalize(row[start + 2]);
-      const rawOrg = String(row[start] || '').trim();
-      const rawDept = String(row[start + 1] || '').trim();
-      const rawRole = String(row[start + 2] || '').trim();
+    const orgLabels = [];
+    const deptLabels = [];
+    const roleLabels = [];
+    for (let k = 0; k < AFFILIATION_SLOTS; k++) {
+      const deptCol = _affiliationDeptCol(k);
+      const roleCol = _affiliationRoleCol(k);
+      if (roleCol >= row.length) break;
+      const affCode = String(row[deptCol] || '').trim();
+      const aff = _parseAffiliationCode(affCode, masters);
+      const rolePid = String(row[roleCol] || '').trim();
+      const roleLabel = _toLabelOrEmpty(rolePid, masters.role.byPid);
+      const deptLabel = aff.dept;
+      const orgLabel = aff.org;
+
+      const org = normalize(orgLabel);
+      const dept = normalize(deptLabel);
+      const role = normalize(roleLabel);
+      const rawOrg = orgLabel;
+      const rawDept = deptLabel;
+      const rawRole = roleLabel;
 
       if (rawOrg || rawDept || rawRole) {
-        depts.push([rawOrg, rawDept, rawRole].filter(Boolean).join(" "));
+        const affiliationLabel = rawDept ? ((rawOrg ? (rawOrg + '/' + rawDept) : rawDept)) : rawOrg;
+        depts.push([affiliationLabel, rawRole].filter(Boolean).join(' '));
       }
+
+      if (rawOrg) orgLabels.push(rawOrg);
+      if (rawDept) deptLabels.push(rawDept);
+      if (rawRole) roleLabels.push(rawRole);
 
       if (org) affiliationTokens.push(org);
       if (dept) affiliationTokens.push(dept);
@@ -1226,53 +1667,21 @@ function searchRecipients(criteria) {
     if (filterRole && !isRoleMatch) continue;
 
     results.push({
-      name: nameJp, email: email, department: depts.join(", ") || "所属なし", grade: grade, field: field
+      name: nameJp,
+      email: email,
+      org: Array.from(new Set(orgLabels)),
+      department: Array.from(new Set(deptLabels)),
+      role: Array.from(new Set(roleLabels)),
+      departmentText: depts.join(", ") || "所属なし",
+      grade: grade,
+      field: field
     });
   }
   return results;
 }
 
 function handleSpreadsheetEdit(e) {
-  if (!e || !e.range) return;
-  const sheet = e.range.getSheet();
-  if (sheet.getName() !== SHEET_USERS) return;
-  const range = e.range;
-  const col = range.getColumn();
-  const row = range.getRow();
-  if (row < 2) return;
-
-  // 所属局列を検出（1-based）
-  const startCol = COL.ORG_START + 1;
-  const lastCol = COL.ORG_START + (5 * 3); // 1-based last column for roles
-  if (col < startCol || col > lastCol) return;
-  if ((col - startCol) % 3 !== 0) return;
-
-  const orgName = e.value;
-  const deptRange = sheet.getRange(row, col + 1); // 所属部門の隣のセル
-
-  // 所属局が空の場合、所属部門もクリア
-  if (!orgName) {
-    deptRange.clearContent();
-    deptRange.clearDataValidation();
-    return;
-  }
-
-  const ss = e.source;
-  const optSheet = ss.getSheetByName(SHEET_OPTIONS);
-  const lastRow = optSheet.getLastRow();
-  if (lastRow < 2) return;
-
-  // Optionsシートの部門マスタ（E列:局, F列:部門）から該当する部門を抽出
-  const masterData = optSheet.getRange(2, 5, lastRow - 1, 2).getValues();
-  const filteredDepts = masterData.filter(r => r[0] === orgName).map(r => r[1]).filter(String);
-
-  // 該当する部門のみのドロップダウンリストを設定
-  if (filteredDepts.length > 0) {
-    const rule = SpreadsheetApp.newDataValidation().requireValueInList(filteredDepts).setAllowInvalid(true).build();
-    deptRange.setDataValidation(rule);
-  } else {
-    deptRange.clearDataValidation();
-  }
+  return;
 }
 
 /* --------------------------------------------------------------------------
@@ -1380,6 +1789,7 @@ function createRosterSpreadsheet(sessionToken, selectedFields, folderId, filenam
     if (login.status !== 'authorized') throw new Error('認証されていません');
 
     const ss = SpreadsheetApp.openById(getSpreadsheetId());
+    const masters = _loadMasterMaps(ss);
     const usersSheet = ss.getSheetByName(SHEET_USERS);
     if (!usersSheet) throw new Error('Users シートが見つかりません');
 
@@ -1418,23 +1828,22 @@ function createRosterSpreadsheet(sessionToken, selectedFields, folderId, filenam
       else if (f === '出身校') pushIf('出身校', COL.ALMA_MATER);
       else if (f === '退局' || f === '在籍') pushIf('退局', COL.RETIRED);
       else if (f === '次年度継続') pushIf('次年度継続', COL.CONTINUE_NEXT);
-      else if (f === '所属局1') pushIf('所属局1', COL.ORG_START + 0 * 3);
-      else if (f === '所属部門1') pushIf('所属部門1', COL.ORG_START + 0 * 3 + 1);
-      else if (f === '役職1') pushIf('役職1', COL.ORG_START + 0 * 3 + 2);
-      else if (f === '所属局2') pushIf('所属局2', COL.ORG_START + 1 * 3);
-      else if (f === '所属部門2') pushIf('所属部門2', COL.ORG_START + 1 * 3 + 1);
-      else if (f === '役職2') pushIf('役職2', COL.ORG_START + 1 * 3 + 2);
-      else if (f === '所属局3') pushIf('所属局3', COL.ORG_START + 2 * 3);
-      else if (f === '所属部門3') pushIf('所属部門3', COL.ORG_START + 2 * 3 + 1);
-      else if (f === '役職3') pushIf('役職3', COL.ORG_START + 2 * 3 + 2);
-      else if (f === '所属局4') pushIf('所属局4', COL.ORG_START + 3 * 3);
-      else if (f === '所属部門4') pushIf('所属部門4', COL.ORG_START + 3 * 3 + 1);
-      else if (f === '役職4') pushIf('役職4', COL.ORG_START + 3 * 3 + 2);
-      else if (f === '所属局5') pushIf('所属局5', COL.ORG_START + 4 * 3);
-      else if (f === '所属部門5') pushIf('所属部門5', COL.ORG_START + 4 * 3 + 1);
-      else if (f === '役職5') pushIf('役職5', COL.ORG_START + 4 * 3 + 2);
-      else if (f === '車所有') pushIf('車所有', COL.CAR_OWNER);
-      else if (f === 'Admin') pushIf('Admin', COL.ADMIN);
+      else {
+        const deptMatch = String(f || '').match(/^所属部門(\d{1,2})$/);
+        const roleMatch = String(f || '').match(/^役職(\d{1,2})$/);
+        const orgMatch = String(f || '').match(/^所属局(\d{1,2})$/);
+        if (orgMatch) {
+          const idx = Number(orgMatch[1]);
+          if (idx >= 1 && idx <= AFFILIATION_SLOTS) pushIf('所属局' + idx, 'ORG_' + idx);
+        } else if (deptMatch) {
+          const idx = Number(deptMatch[1]);
+          if (idx >= 1 && idx <= AFFILIATION_SLOTS) pushIf('所属部門' + idx, _affiliationDeptCol(idx - 1));
+        } else if (roleMatch) {
+          const idx = Number(roleMatch[1]);
+          if (idx >= 1 && idx <= AFFILIATION_SLOTS) pushIf('役職' + idx, _affiliationRoleCol(idx - 1));
+        } else if (f === '車所有') pushIf('車所有', COL.CAR_OWNER);
+        else if (f === 'Admin') pushIf('Admin', COL.ADMIN);
+      }
     }
 
     if (indices.length === 0) throw new Error('出力項目が選択されていません');
@@ -1446,7 +1855,14 @@ function createRosterSpreadsheet(sessionToken, selectedFields, folderId, filenam
       // skip empty rows (メールアドレスが空なら無視)
       if (!row[COL.EMAIL]) continue;
       const outRow = indices.map(ci => {
-        let v = row[ci];
+        let v = '';
+        if (typeof ci === 'string' && /^ORG_\d+$/.test(ci)) {
+          const slot = Number(ci.replace('ORG_', '')) - 1;
+          const aff = _parseAffiliationCode(row[_affiliationDeptCol(slot)], masters);
+          v = aff.org || '';
+        } else {
+          v = row[ci];
+        }
         if (v === undefined || v === null) return '';
         // Format birthday as YYYY/MM/DD for CSV (Windows Excel friendly)
         if (ci === COL.BIRTHDAY) {
@@ -1461,6 +1877,16 @@ function createRosterSpreadsheet(sessionToken, selectedFields, folderId, filenam
           } catch (e) {
             return String(v);
           }
+        }
+        if (ci === COL.GRADE) return _toLabelOrEmpty(v, masters.grade.byPid);
+        if (ci === COL.FIELD) return _toLabelOrEmpty(v, masters.field.byPid);
+        if (typeof ci === 'string' && /^ORG_\d+$/.test(ci)) return String(v || '');
+        for (let k = 0; k < AFFILIATION_SLOTS; k++) {
+          if (ci === _affiliationDeptCol(k)) {
+            const aff = _parseAffiliationCode(v, masters);
+            return aff.dept || aff.org || aff.code;
+          }
+          if (ci === _affiliationRoleCol(k)) return _toLabelOrEmpty(v, masters.role.byPid);
         }
         return v;
       });
@@ -1512,6 +1938,7 @@ function createRosterCsv(sessionToken, params) {
     const filter = params.filter || { type: 'all' };
 
     const ss = SpreadsheetApp.openById(getSpreadsheetId());
+    const masters = _loadMasterMaps(ss);
     const usersSheet = ss.getSheetByName(SHEET_USERS);
     if (!usersSheet) throw new Error('Users シートが見つかりません');
 
@@ -1532,7 +1959,7 @@ function createRosterCsv(sessionToken, params) {
     }
 
     const allowedIdxSet = new Set();
-    const add = (idx) => { if (typeof idx === 'number' && idx >= 0) allowedIdxSet.add(idx); };
+    const add = (idx) => { if ((typeof idx === 'number' && idx >= 0) || (typeof idx === 'string' && /^ORG_\d+$/.test(idx))) allowedIdxSet.add(idx); };
 
     for (let f of selectedFields || []) {
       if (f === '氏名') add(COL.NAME_JP);
@@ -1546,27 +1973,29 @@ function createRosterCsv(sessionToken, params) {
       else if (f === '出身校') add(COL.ALMA_MATER);
       else if (f === '退局' || f === '在籍') add(COL.RETIRED);
       else if (f === '次年度継続') add(COL.CONTINUE_NEXT);
-      else if (f === '所属局1') { add(COL.ORG_START + 0 * 3); }
-      else if (f === '所属部門1') { add(COL.ORG_START + 0 * 3 + 1); }
-      else if (f === '役職1') { add(COL.ORG_START + 0 * 3 + 2); }
-      else if (f === '所属局2') { add(COL.ORG_START + 1 * 3); }
-      else if (f === '所属部門2') { add(COL.ORG_START + 1 * 3 + 1); }
-      else if (f === '役職2') { add(COL.ORG_START + 1 * 3 + 2); }
-      else if (f === '所属局3') { add(COL.ORG_START + 2 * 3); }
-      else if (f === '所属部門3') { add(COL.ORG_START + 2 * 3 + 1); }
-      else if (f === '役職3') { add(COL.ORG_START + 2 * 3 + 2); }
-      else if (f === '所属局4') { add(COL.ORG_START + 3 * 3); }
-      else if (f === '所属部門4') { add(COL.ORG_START + 3 * 3 + 1); }
-      else if (f === '役職4') { add(COL.ORG_START + 3 * 3 + 2); }
-      else if (f === '所属局5') { add(COL.ORG_START + 4 * 3); }
-      else if (f === '所属部門5') { add(COL.ORG_START + 4 * 3 + 1); }
-      else if (f === '役職5') { add(COL.ORG_START + 4 * 3 + 2); }
-      else if (f === '車所有') add(COL.CAR_OWNER);
-      else if (f === 'Admin') add(COL.ADMIN);
+      else {
+        const deptMatch = String(f || '').match(/^所属部門(\d{1,2})$/);
+        const roleMatch = String(f || '').match(/^役職(\d{1,2})$/);
+        const orgMatch = String(f || '').match(/^所属局(\d{1,2})$/);
+        if (orgMatch) {
+          const idx = Number(orgMatch[1]);
+          if (idx >= 1 && idx <= AFFILIATION_SLOTS) add('ORG_' + idx);
+        } else if (deptMatch) {
+          const idx = Number(deptMatch[1]);
+          if (idx >= 1 && idx <= AFFILIATION_SLOTS) add(_affiliationDeptCol(idx - 1));
+        } else if (roleMatch) {
+          const idx = Number(roleMatch[1]);
+          if (idx >= 1 && idx <= AFFILIATION_SLOTS) add(_affiliationRoleCol(idx - 1));
+        } else if (f === '車所有') add(COL.CAR_OWNER);
+        else if (f === 'Admin') add(COL.ADMIN);
+      }
     }
 
-    const indices = Array.from(allowedIdxSet).sort((a,b)=>a-b);
-    const headersOut = indices.map(i => HEADER_USERS[i] || '');
+    const indices = Array.from(allowedIdxSet);
+    const headersOut = indices.map(i => {
+      if (typeof i === 'string' && /^ORG_\d+$/.test(i)) return '所属局' + i.replace('ORG_', '');
+      return HEADER_USERS[i] || '';
+    });
 
     if (indices.length === 0) throw new Error('出力項目が選択されていません');
 
@@ -1612,15 +2041,17 @@ function createRosterCsv(sessionToken, params) {
           const targetOrg = sel.org;
           const targetDept = sel.dept || '';
           if (mode === 'mainOnly') {
-            const org1 = row[COL.ORG_START];
-            const dept1 = row[COL.ORG_START + 1];
+            const aff1 = _parseAffiliationCode(String(row[_affiliationDeptCol(0)] || '').trim(), masters);
+            const dept1 = aff1.dept;
+            const org1 = aff1.org;
             if (targetOrg && org1 === targetOrg) {
               if (!targetDept || dept1 === targetDept) { matched = true; break; }
             }
           } else {
-            for (let k = 0; k < 5; k++) {
-              const o = row[COL.ORG_START + k * 3];
-              const d = row[COL.ORG_START + k * 3 + 1];
+            for (let k = 0; k < AFFILIATION_SLOTS; k++) {
+              const aff = _parseAffiliationCode(String(row[_affiliationDeptCol(k)] || '').trim(), masters);
+              const d = aff.dept;
+              const o = aff.org;
               if (o && o === targetOrg) {
                 if (!targetDept || d === targetDept) { matched = true; break; }
               }
@@ -1633,44 +2064,12 @@ function createRosterCsv(sessionToken, params) {
       filteredRows.push(row);
     }
 
-    // Load Options ordering for sorting
-    let gradeOrder = [];
-    let fieldOrder = [];
-    let orgOrder = [];
-    const deptMap = {}; // { orgName: [dept1, dept2...] }
-    try {
-      const optSheet = ss.getSheetByName(SHEET_OPTIONS);
-      if (optSheet) {
-        const odata = optSheet.getDataRange().getValues();
-        for (let i = 1; i < odata.length; i++) {
-          const r = odata[i] || [];
-          const g = String(r[0] || '').trim(); if (g && gradeOrder.indexOf(g) === -1) gradeOrder.push(g);
-          const f = String(r[1] || '').trim(); if (f && fieldOrder.indexOf(f) === -1) fieldOrder.push(f);
-          const org = String(r[3] || '').trim(); if (org && orgOrder.indexOf(org) === -1) orgOrder.push(org);
-          const deptOrg = String(r[4] || '').trim(); const deptName = String(r[5] || '').trim();
-          if (deptOrg && deptName) {
-            if (!deptMap[deptOrg]) deptMap[deptOrg] = [];
-            if (deptMap[deptOrg].indexOf(deptName) === -1) deptMap[deptOrg].push(deptName);
-          }
-        }
-      }
-    } catch (e) { /* ignore */ }
+    const gradeOrder = Object.keys(masters.grade.byPid);
+    const fieldOrder = Object.keys(masters.field.byPid);
 
     const idxIn = (arr, v) => { if (!arr || !arr.length) return -1; if (!v) return arr.length + 1; const i = arr.indexOf(String(v)); return i === -1 ? arr.length : i; };
 
     filteredRows.sort((A, B) => {
-      // org1
-      const aOrg = String(A[COL.ORG_START] || '');
-      const bOrg = String(B[COL.ORG_START] || '');
-      const ai = idxIn(orgOrder, aOrg);
-      const bi = idxIn(orgOrder, bOrg);
-      if (ai !== bi) return ai - bi;
-      // dept1
-      const aDept = String(A[COL.ORG_START + 1] || '');
-      const bDept = String(B[COL.ORG_START + 1] || '');
-      const deptList = deptMap[aOrg] || [];
-      const adi = deptList.indexOf(aDept); const bdi = deptList.indexOf(bDept);
-      if (adi !== bdi) return (adi === -1 ? 1 : adi) - (bdi === -1 ? 1 : bdi);
       // grade
       const aGrade = String(A[COL.GRADE] || '');
       const bGrade = String(B[COL.GRADE] || '');
@@ -1689,7 +2088,14 @@ function createRosterCsv(sessionToken, params) {
       if (an < bn) return -1; if (an > bn) return 1; return 0;
     });
 
-    const outRows = filteredRows.map(row => indices.map(ci => row[ci] === undefined || row[ci] === null ? '' : row[ci]));
+    const outRows = filteredRows.map(row => indices.map(ci => {
+      if (typeof ci === 'string' && /^ORG_\d+$/.test(ci)) {
+        const slot = Number(ci.replace('ORG_', '')) - 1;
+        const aff = _parseAffiliationCode(row[_affiliationDeptCol(slot)], masters);
+        return aff.org || '';
+      }
+      return row[ci] === undefined || row[ci] === null ? '' : row[ci];
+    }));
 
     // CSV 生成（Excelの文字化け対策: UTF-8 BOM を先頭に付与）
     const escape = (v) => {
@@ -1703,6 +2109,16 @@ function createRosterCsv(sessionToken, params) {
     // 正規化: 生年月日を必ず YYYY/MM/DD に変換し、Date オブジェクトはフォーマットする
     const formattedOutRows = outRows.map(r => r.map((cell, j) => {
       const origCol = indices[j];
+      if (origCol === COL.GRADE) return _toLabelOrEmpty(cell, masters.grade.byPid);
+      if (origCol === COL.FIELD) return _toLabelOrEmpty(cell, masters.field.byPid);
+      if (typeof origCol === 'string' && /^ORG_\d+$/.test(origCol)) return String(cell || '');
+      for (let k = 0; k < AFFILIATION_SLOTS; k++) {
+        if (origCol === _affiliationDeptCol(k)) {
+          const aff = _parseAffiliationCode(cell, masters);
+          return aff.dept || aff.org || aff.code;
+        }
+        if (origCol === _affiliationRoleCol(k)) return _toLabelOrEmpty(cell, masters.role.byPid);
+      }
       if (origCol === COL.BIRTHDAY) {
         if (!cell && cell !== 0) return '';
         if (Object.prototype.toString.call(cell) === '[object Date]' || cell instanceof Date) {
@@ -1966,6 +2382,7 @@ function listSurveys(sessionToken) {
   } catch (e) { /* ignore */ }
 
   const ss = SpreadsheetApp.openById(getSpreadsheetId());
+  const masters = _loadMasterMaps(ss);
   const formsSheet = ss.getSheetByName(SHEET_FORMS);
   const out = [];
   if (!formsSheet) return out;
@@ -1978,15 +2395,14 @@ function listSurveys(sessionToken) {
       const spreadRef = String(r[0] || '').trim();
       const formUrl = String(r[1] || '').trim();
       const title = String(r[2] || '').trim() || spreadRef;
-      const inChargeOrg = String(r[3] || '').trim() || '';
-      const inChargeDept = String(r[4] || '').trim() || '';
-      const collectingRaw = r[5];
+      const aff = _parseAffiliationCode(r[3], masters);
+      const collectingRaw = r[4];
       const collecting = (collectingRaw === true) || (String(collectingRaw || '').toLowerCase() === 'true');
-      const scoreName = String(r[6] || '').trim() || null;
-      const scoreUnit = String(r[7] || '').trim() || null;
+      const scoreName = String(r[5] || '').trim() || null;
+      const scoreUnit = String(r[6] || '').trim() || null;
       const sid = _extractSpreadsheetId(spreadRef) || _extractSpreadsheetId(formUrl);
       if (!sid) {
-        out.push({ title: title, spreadsheetId: null, spreadsheetUrl: null, formUrl: formUrl || null, inChargeOrg: inChargeOrg, inChargeDept: inChargeDept, collecting: collecting, scoreName: scoreName, scoreUnit: scoreUnit, userLatestRowIndex: null, available: false, latestResponseDate: null, latestScore: null });
+        out.push({ title: title, spreadsheetId: null, spreadsheetUrl: null, formUrl: formUrl || null, inChargeOrg: aff.orgPid || '', inChargeDept: aff.deptPid || '', inChargeCode: aff.code || '', inChargeOrgLabel: aff.org || '', inChargeDeptLabel: aff.dept || aff.org || '', collecting: collecting, scoreName: scoreName, scoreUnit: scoreUnit, userLatestRowIndex: null, available: false, latestResponseDate: null, latestScore: null });
         return;
       }
       // Determine whether the current user has a response in this survey sheet
@@ -2061,8 +2477,11 @@ function listSurveys(sessionToken) {
         spreadsheetId: sid,
         spreadsheetUrl: spreadsheetUrl,
         formUrl: formUrl || null,
-        inChargeOrg: inChargeOrg,
-        inChargeDept: inChargeDept,
+        inChargeOrg: aff.orgPid || '',
+        inChargeDept: aff.deptPid || '',
+        inChargeCode: aff.code || '',
+        inChargeOrgLabel: aff.org || '',
+        inChargeDeptLabel: aff.dept || aff.org || '',
         collecting: collecting,
         scoreName: scoreName,
         scoreUnit: scoreUnit,
@@ -2104,21 +2523,26 @@ function listFormDefinitions(sessionToken) {
     if (!formsSheet) return { success: true, items: [] };
     const lastRow = formsSheet.getLastRow();
     if (lastRow < 2) return { success: true, items: [] };
+    const masters = _loadMasterMaps(ss);
     const cols = Math.max(HEADER_FORMS.length, formsSheet.getLastColumn());
     const rows = formsSheet.getRange(2, 1, lastRow - 1, cols).getValues();
     const items = rows.map((r, i) => {
-      const collectingRaw = r[5];
+        const aff = _parseAffiliationCode(r[3], masters);
+      const collectingRaw = r[4];
       const collecting = (collectingRaw === true) || (String(collectingRaw || '').toLowerCase() === 'true');
       return {
         rowIndex: i + 2,
         spreadsheetRef: String(r[0] || '').trim(),
         formUrl: String(r[1] || '').trim(),
         title: String(r[2] || '').trim(),
-        inChargeOrg: String(r[3] || '').trim(),
-        inChargeDept: String(r[4] || '').trim(),
+          inChargeOrg: aff.orgPid || '',
+          inChargeDept: aff.deptPid || '',
+          inChargeCode: aff.code || '',
+          inChargeOrgLabel: aff.org || '',
+          inChargeDeptLabel: aff.dept || aff.org || '',
         collecting: collecting,
-        scoreName: String(r[6] || '').trim(),
-        scoreUnit: String(r[7] || '').trim()
+        scoreName: String(r[5] || '').trim(),
+        scoreUnit: String(r[6] || '').trim()
       };
     });
     return { success: true, items: items };
@@ -2136,15 +2560,15 @@ function saveFormDefinition(sessionToken, payload) {
     const formUrl = String(data.formUrl || '').trim();
     if (!spreadsheetRef && !formUrl) throw new Error('アンケートシートまたはフォームURLのどちらかを入力してください');
     const rowIndex = Number(data.rowIndex || 0);
+    const masters = _loadMasterMaps(SpreadsheetApp.openById(getSpreadsheetId()));
     const row = new Array(HEADER_FORMS.length).fill('');
     row[0] = spreadsheetRef;
     row[1] = formUrl;
     row[2] = String(data.title || '').trim();
-    row[3] = String(data.inChargeOrg || '').trim();
-    row[4] = String(data.inChargeDept || '').trim();
-    row[5] = data.collecting ? true : false;
-    row[6] = String(data.scoreName || '').trim();
-    row[7] = String(data.scoreUnit || '').trim();
+    row[3] = _buildAffiliationStorageCode(data.inChargeOrg, data.inChargeDept, masters);
+    row[4] = data.collecting ? true : false;
+    row[5] = String(data.scoreName || '').trim();
+    row[6] = String(data.scoreUnit || '').trim();
 
     const ss = SpreadsheetApp.openById(getSpreadsheetId());
     const formsSheet = ss.getSheetByName(SHEET_FORMS) || ss.insertSheet(SHEET_FORMS);
@@ -2246,8 +2670,8 @@ function getSurveyDetails(sessionToken, spreadsheetRef, rowIndex) {
           const b = String(metaRows[i][1] || '').trim();
           const fid = _extractSpreadsheetId(a) || _extractSpreadsheetId(b);
           if (fid === sid || a === spreadsheetRef || b === spreadsheetRef) {
-            scoreName = String(metaRows[i][6] || '').trim() || null;
-            scoreUnit = String(metaRows[i][7] || '').trim() || null;
+            scoreName = String(metaRows[i][5] || '').trim() || null;
+            scoreUnit = String(metaRows[i][6] || '').trim() || null;
             break;
           }
         }
@@ -2335,8 +2759,8 @@ function getSurveyDetails(sessionToken, spreadsheetRef, rowIndex) {
         const b = String(metaRows[i][1] || '').trim();
         const fid = _extractSpreadsheetId(a) || _extractSpreadsheetId(b);
         if (fid === sid || a === spreadsheetRef || b === spreadsheetRef) {
-          scoreName = String(metaRows[i][6] || '').trim() || null;
-          scoreUnit = String(metaRows[i][7] || '').trim() || null;
+          scoreName = String(metaRows[i][5] || '').trim() || null;
+          scoreUnit = String(metaRows[i][6] || '').trim() || null;
           break;
         }
       }
@@ -2405,7 +2829,7 @@ function _extractFormId(formUrl) {
 const SHEET_COLLECTIONS = 'Collections';
 const SHEET_COLLECTIONS_LOG = 'Collections_log';
 
-const HEADER_COLLECTIONS = ['id','タイトル','スプレッドシートURL','担当局','担当部門','作成日時','作成者'];
+const HEADER_COLLECTIONS = ['id','タイトル','スプレッドシート','担当部門','作成日時','作成者'];
 const HEADER_COLLECTIONS_LOG = ['Collections_id','タイムスタンプ','取引先メールアドレス','取引種別','取引金額','担当者メールアドレス'];
 
 function ensureCollectionsSheets() {
@@ -2436,6 +2860,7 @@ function listCollections(sessionToken) {
   try {
     ensureCollectionsSheets();
     const ss = SpreadsheetApp.openById(getSpreadsheetId());
+    const masters = _loadMasterMaps(ss);
     const s = ss.getSheetByName(SHEET_COLLECTIONS);
     if (!s) {
       try { const ssLog2 = SpreadsheetApp.openById(getSpreadsheetId()); const ls2 = ssLog2.getSheetByName(SHEET_LOGS) || ssLog2.insertSheet(SHEET_LOGS); ls2.appendRow([new Date(), 'listCollections', sessionToken || '', 'end', JSON.stringify({ count:0 })]); } catch(e){}
@@ -2448,7 +2873,8 @@ function listCollections(sessionToken) {
     }
     const rows = s.getRange(2,1,lr-1, Math.max(HEADER_COLLECTIONS.length, s.getLastColumn())).getValues();
     const out = rows.map(r => {
-      const createdRaw = r[5];
+      const aff = _parseAffiliationCode(r[3], masters);
+      const createdRaw = r[4];
       let createdVal = null;
       try {
         if (createdRaw instanceof Date) createdVal = createdRaw.getTime();
@@ -2456,7 +2882,7 @@ function listCollections(sessionToken) {
         else if (createdRaw) createdVal = String(createdRaw);
         else createdVal = null;
       } catch (e) { createdVal = String(createdRaw); }
-      return { id: String(r[0]||''), title: String(r[1]||''), spreadsheetUrl: String(r[2]||''), inChargeOrg: String(r[3]||''), inChargeDept: String(r[4]||''), createdAt: createdVal, createdBy: String(r[6]||'') };
+      return { id: String(r[0]||''), title: String(r[1]||''), spreadsheetUrl: String(r[2]||''), inChargeOrg: aff.orgPid || '', inChargeDept: aff.deptPid || '', inChargeCode: aff.code || '', inChargeOrgLabel: aff.org || '', inChargeDeptLabel: aff.dept || aff.org || '', createdAt: createdVal, createdBy: String(r[5]||'') };
     });
     try { const ssLog4 = SpreadsheetApp.openById(getSpreadsheetId()); const ls4 = ssLog4.getSheetByName(SHEET_LOGS) || ssLog4.insertSheet(SHEET_LOGS); ls4.appendRow([new Date(), 'listCollections', sessionToken || '', 'end', JSON.stringify({ count: out.length })]); } catch(e){}
     return out;
@@ -2473,9 +2899,10 @@ function listCollections(sessionToken) {
 }
 
 function createCollection(sessionToken, payload) {
-  // payload: { title, spreadsheetUrl, inChargeOrg, inChargeDept }
+  // payload: { title, spreadsheetUrl, inChargeDept }
   ensureCollectionsSheets();
   const ss = SpreadsheetApp.openById(getSpreadsheetId());
+  const masters = _loadMasterMaps(ss);
   const s = ss.getSheetByName(SHEET_COLLECTIONS);
   const id = _generateCollectionId();
   const now = new Date();
@@ -2486,7 +2913,7 @@ function createCollection(sessionToken, payload) {
   let deptVal = payload.inChargeDept || '';
   if (orgVal === '選択' || orgVal === '選択してください') orgVal = '';
   if (deptVal === '選択' || deptVal === '選択してください') deptVal = '';
-  const row = [id, payload.title || '', payload.spreadsheetUrl || '', orgVal || '', deptVal || '', now, createdBy];
+  const row = [id, payload.title || '', payload.spreadsheetUrl || '', _buildAffiliationStorageCode(orgVal, deptVal, masters), now, createdBy];
   s.appendRow(row);
   // log creation
   try {
@@ -2614,7 +3041,7 @@ function fetchCollectionSummary(sessionToken, collectionId) {
   const rows = s.getRange(2,1,lr-1, HEADER_COLLECTIONS.length).getValues();
   const found = rows.find(r => String(r[0]||'') === String(collectionId));
   if (!found) return { success:false, message: '指定のCollectionが見つかりません' };
-  const col = { id: String(found[0]||''), title: String(found[1]||''), spreadsheetUrl: String(found[2]||''), inChargeOrg: String(found[3]||''), inChargeDept: String(found[4]||''), createdAt: found[5], createdBy: String(found[6]||'') };
+  const col = { id: String(found[0]||''), title: String(found[1]||''), spreadsheetUrl: String(found[2]||''), inChargeOrg: '', inChargeDept: String(found[3]||''), createdAt: found[4], createdBy: String(found[5]||'') };
 
   const parsed = parseSourceSpreadsheet(col.spreadsheetUrl);
   if (!parsed.success) return parsed;
@@ -2742,6 +3169,7 @@ function updateCollection(sessionToken, collectionId, payload) {
     if (!login || login.status !== 'authorized') throw new Error('認証されていません');
     ensureCollectionsSheets();
     const ss = SpreadsheetApp.openById(getSpreadsheetId());
+    const masters = _loadMasterMaps(ss);
     const s = ss.getSheetByName(SHEET_COLLECTIONS);
     const lr = s.getLastRow();
     if (lr < 2) throw new Error('Collectionsが空です');
@@ -2753,13 +3181,13 @@ function updateCollection(sessionToken, collectionId, payload) {
         const title = String(payload.title || r[1] || '');
         const spreadsheetUrl = String(payload.spreadsheetUrl || r[2] || '');
         // normalize placeholder values from client
-        let inChargeOrg = (typeof payload.inChargeOrg !== 'undefined') ? String(payload.inChargeOrg) : String(r[3] || '');
-        let inChargeDept = (typeof payload.inChargeDept !== 'undefined') ? String(payload.inChargeDept) : String(r[4] || '');
+        let inChargeOrg = (typeof payload.inChargeOrg !== 'undefined') ? String(payload.inChargeOrg) : '';
+        let inChargeDept = (typeof payload.inChargeDept !== 'undefined') ? String(payload.inChargeDept) : String(r[3] || '');
         if (inChargeOrg === '選択' || inChargeOrg === '選択してください') inChargeOrg = '';
         if (inChargeDept === '選択' || inChargeDept === '選択してください') inChargeDept = '';
-        const createdAt = r[5] || new Date();
-        const createdBy = r[6] || '';
-        const newRow = [collectionId, title, spreadsheetUrl, inChargeOrg, inChargeDept, createdAt, createdBy];
+        const createdAt = r[4] || new Date();
+        const createdBy = r[5] || '';
+        const newRow = [collectionId, title, spreadsheetUrl, _buildAffiliationStorageCode(inChargeOrg, inChargeDept, masters), createdAt, createdBy];
         s.getRange(rowIndex, 1, 1, newRow.length).setValues([newRow]);
         try { const ls = ss.getSheetByName(SHEET_LOGS) || ss.insertSheet(SHEET_LOGS); ls.appendRow([new Date(), 'updateCollection', sessionToken || '', 'updated', JSON.stringify({ id: collectionId, title: title })]); } catch(e) {}
         return { success: true };
