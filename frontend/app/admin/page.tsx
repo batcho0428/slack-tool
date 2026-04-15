@@ -319,6 +319,11 @@ export default function AdminPage() {
               </div>
             )}
             <h2 className="text-lg font-bold">局の編集</h2>
+            {error && (
+              <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+                {error}
+              </div>
+            )}
             <div className="space-y-1">
               <label className="text-xs text-gray-500">pid</label>
               <input type="hidden" name="pid" value={orgModal.item?.pid || ''} />
@@ -381,6 +386,11 @@ export default function AdminPage() {
               </div>
             )}
             <h2 className="text-lg font-bold">部門の編集</h2>
+            {error && (
+              <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+                {error}
+              </div>
+            )}
             <div className="space-y-1">
               <label className="text-xs text-gray-500">pid</label>
               <input type="hidden" name="pid" value={deptModal.item?.pid || ''} />
@@ -438,6 +448,11 @@ export default function AdminPage() {
               </div>
             )}
             <h2 className="text-lg font-bold">役職の編集</h2>
+            {error && (
+              <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+                {error}
+              </div>
+            )}
             <div className="space-y-1">
               <label className="text-xs text-gray-500">pid</label>
               <input type="hidden" name="pid" value={roleModal.item?.pid || ''} />
