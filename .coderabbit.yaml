@@ -1,0 +1,9 @@
+language: "ja-JP"
+reviews:
+  profile: "chill" # "assertive" よりノイズが少ない
+  high_level_summary: true # PRの要約を有効化
+  auto_review:
+    enabled: true # 自動レビューを有効化
+  drafts: false # ドラフトPRはレビューしない
+chat:
+  auto_reply: true # AIのコメントへの自動返信
