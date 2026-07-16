@@ -1,6 +1,5 @@
 import type { Metadata } from 'next';
 import './globals.css';
-import Script from 'next/script';
 
 export const metadata: Metadata = {
   title: 'Slack Tool (Next.js)',
@@ -17,7 +16,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body>
-        <Script src="https://cdn.tailwindcss.com" strategy="beforeInteractive" />
         {children}
       </body>
     </html>

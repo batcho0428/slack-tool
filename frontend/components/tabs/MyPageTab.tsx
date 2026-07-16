@@ -4,8 +4,9 @@
 
 import { useEffect, useRef, useState } from 'react';
 import SearchModal from '../shared/SearchModal';
+import DialogModal from '../shared/DialogModal';
 
-        export default function MyPageTab({ runGas, DialogModal }) {
+        export default function MyPageTab({ runGas }) {
             const [profile, setProfile] = useState(null);
             const [savedProfile, setSavedProfile] = useState(null);
             const [options, setOptions] = useState(null);

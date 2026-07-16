@@ -129,6 +129,10 @@ function _dispatchApiAction(action, payload) {
       return listFormDefinitions(payload.sessionToken);
     case 'saveFormDefinition':
       return saveFormDefinition(payload.sessionToken, payload.payload || {});
+    case 'collectSurveyReminderStatus':
+      return collectSurveyReminderStatus(payload.sessionToken, payload.surveyRowIndices || []);
+    case 'sendSurveyReminderDMs':
+      return sendSurveyReminderDMs(payload.sessionToken, payload.payload || {});
     case 'listCollections':
       return listCollections(payload.sessionToken);
     case 'createCollection':

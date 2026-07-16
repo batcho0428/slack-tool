@@ -11,7 +11,7 @@
 
 ## 追加した主なファイル
 
-- GAS APIエンドポイント: `Api.gs`
+- GAS バックエンド: `Main.gs`, `Auth.gs`, `User.gs`, `Api.gs` など機能ごとに分割された `.gs` ファイル群
 - Next.jsアプリ: `frontend/` 一式
 - Docker: `docker-compose.yml`, `frontend/Dockerfile`
 
@@ -22,8 +22,7 @@
 ### 1. Apps Scriptプロジェクトを開く
 
 1. Google Apps Script エディタで対象プロジェクトを開く
-2. `Code.gs` があることを確認する
-3. `Api.gs` を追加して保存する
+2. `Main.gs`, `Auth.gs`, `Api.gs` など、分割された複数の `.gs` ファイルがあることを確認する
 
 ### 2. スクリプトプロパティを設定する
 
