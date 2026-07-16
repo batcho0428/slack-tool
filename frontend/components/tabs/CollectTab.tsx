@@ -3,8 +3,10 @@
 /* eslint-disable */
 
 import { useEffect, useRef, useState } from 'react';
+import DetailsModal from '../shared/DetailsModal';
+import DialogModal from '../shared/DialogModal';
 
-        export default function CollectTab({ user, runGas, parseCsv, formatPreviewBirthday, DetailsModal, DialogModal }) {
+        export default function CollectTab({ user, runGas, parseCsv, formatPreviewBirthday }) {
                     const [collections, setCollections] = useState([]);
                     const [loading, setLoading] = useState(true);
                     const [selectedId, setSelectedId] = useState('');

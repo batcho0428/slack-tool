@@ -6,8 +6,9 @@ import { useEffect, useState } from 'react';
 import SearchModal from '../shared/SearchModal';
 import RecipientSelector from '../shared/RecipientSelector';
 import ResultModal from '../shared/ResultModal';
+import DialogModal from '../shared/DialogModal';
 
-        export default function ChannelTab({ user, authUrl, runGas, fetchAuthUrl, processInBatches, DialogModal }) {
+        export default function ChannelTab({ user, authUrl, runGas, fetchAuthUrl, processInBatches }) {
             const [channels, setChannels] = useState([]);
             const [selectedChannel, setSelectedChannel] = useState('');
             const [recipients, setRecipients] = useState([]);

@@ -4,8 +4,9 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import ResultModal from '../shared/ResultModal';
+import DetailsModal from '../shared/DetailsModal';
 
-        export default function SurveyTab({ user, runGas, DetailsModal }) {
+        export default function SurveyTab({ user, runGas }) {
             const [surveys, setSurveys] = useState([]);
             const [surveysLoading, setSurveysLoading] = useState(false);
             const [surveyFetchError, setSurveyFetchError] = useState('');
@@ -29,6 +30,7 @@ import ResultModal from '../shared/ResultModal';
                 spreadsheetRef: '',
                 formUrl: '',
                 title: '',
+                deadlineDate: '',
                 inChargeOrg: '',
                 inChargeDept: '',
                 collecting: false,
@@ -187,6 +189,7 @@ import ResultModal from '../shared/ResultModal';
                     spreadsheetRef: '',
                     formUrl: '',
                     title: '',
+                    deadlineDate: '',
                     inChargeOrg: '',
                     inChargeDept: '',
                     collecting: true,
@@ -208,6 +211,7 @@ import ResultModal from '../shared/ResultModal';
                     spreadsheetRef: item.spreadsheetRef || '',
                     formUrl: item.formUrl || '',
                     title: item.title || '',
+                    deadlineDate: item.deadlineDate || '',
                     inChargeOrg: item.inChargeOrg || '',
                     inChargeDept: item.inChargeDept || '',
                     collecting: !!item.collecting,
@@ -396,15 +400,12 @@ import ResultModal from '../shared/ResultModal';
                 setRemindError('');
                 try {
                     const token = localStorage.getItem('slack_app_session');
-                    const recipientsPayload = selectedReminderRecipients.map(u => {
-                        const email = String(u.email || '').toLowerCase();
-                        return {
-                            name: u.name,
-                            email: email,
-                            unansweredSurveys: (remindStatusData.unansweredByEmail && remindStatusData.unansweredByEmail[email]) ? remindStatusData.unansweredByEmail[email] : []
-                        };
-                    });
-                    const res = await runGas('sendSurveyReminderDMs', token, { recipients: recipientsPayload });
+                    const recipientsPayload = selectedReminderRecipients.map(u => ({
+                        name: u.name,
+                        email: String(u.email || '').toLowerCase()
+                    }));
+                    const surveyRowIndices = (remindStatusData.surveys || []).map(s => s.rowIndex);
+                    const res = await runGas('sendSurveyReminderDMs', token, { recipients: recipientsPayload, surveyRowIndices });
                     setRemindResult({ success: Number(res && res.success ? res.success : 0), failed: Array.isArray(res && res.failed) ? res.failed : [] });
                     setRemindRecipientSel(new Set());
                 } catch (e) {
@@ -607,6 +608,10 @@ import ResultModal from '../shared/ResultModal';
                                         <div>
                                             <label className="block text-xs text-gray-500 mb-1">タイトル</label>
                                             <input className="w-full border p-2 rounded" value={formDraft.title} onChange={e => setFormDraft(prev => ({ ...prev, title: e.target.value }))} />
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs text-gray-500 mb-1">締め切り日（任意）</label>
+                                            <input type="date" className="w-full border p-2 rounded" value={formDraft.deadlineDate || ''} onChange={e => setFormDraft(prev => ({ ...prev, deadlineDate: e.target.value }))} />
                                         </div>
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                             <div>
@@ -813,6 +818,7 @@ import ResultModal from '../shared/ResultModal';
                                             const email = String(u.email || '').toLowerCase();
                                             const checked = remindRecipientSel.has(email);
                                             const cnt = Number(unansweredCountByEmail[email] || 0);
+                                            const countClass = cnt > 0 ? 'bg-orange-100 text-orange-700' : 'bg-gray-200 text-gray-600';
                                             return (
                                                 <div key={email || idx} onClick={() => toggleRecipient(email)} className={`p-2 rounded-lg border transition-all flex items-center bg-white cursor-pointer ${checked ? 'border-blue-500 bg-blue-50 shadow-sm' : 'border-gray-200'}`}>
                                                     <div className={`w-5 h-5 min-w-[20px] rounded-full border mr-3 flex items-center justify-center ${checked ? 'bg-blue-500 border-blue-500' : 'border-gray-300'}`}>
@@ -821,9 +827,12 @@ import ResultModal from '../shared/ResultModal';
                                                     <div className="overflow-hidden w-full">
                                                         <div className="flex justify-between items-center">
                                                             <div className="font-bold text-gray-800 text-sm truncate">{u.name}</div>
-                                                            <div className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded ml-2 whitespace-nowrap">{cnt}</div>
+                                                            <div className="text-[10px] bg-white border border-blue-200 text-blue-700 px-1.5 py-0.5 rounded ml-2 whitespace-nowrap flex items-center">{String(u.field || '-')} {String(u.grade || '-')}</div>
                                                         </div>
-                                                        <div className="text-xs text-gray-500 mt-0.5 whitespace-normal break-words">{u.email} / {u.departmentText || '所属なし'}</div>
+                                                        <div className="mt-0.5 flex items-center justify-between gap-2">
+                                                            <div className="text-xs text-gray-500 whitespace-normal break-words">{u.departmentText || '所属なし'}</div>
+                                                            <div className={`text-xs px-2 py-0.5 rounded whitespace-nowrap ${countClass}`}>{cnt}件</div>
+                                                        </div>
                                                     </div>
                                                 </div>
                                             );
